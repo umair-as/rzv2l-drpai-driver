@@ -104,24 +104,24 @@ static uint32_t stpc_errint_sts_val;
 static uint32_t intmon_errint_val;
 
 /* DRP ERRINT */
-const static uint32_t drp_errint_msk_reg_tbl[DRP_ERRINT_MSK_REG_NUM][2] =
+static const uint32_t drp_errint_msk_reg_tbl[DRP_ERRINT_MSK_REG_NUM][2] =
 {
     {IDIF_EINTMSK       ,0x00F0F0F0}, {IDIF_EINTMSK_DSC ,0x00000000},
     {ODIF_EINTMSK       ,0x07F0F0F0}, {IDMAC_INTME      ,0x55550000},
     {ODMAC_INTME        ,0x5555FF80}, {RAC_EINTM        ,0x00000000},
 };
-const static uint32_t drp_errint_status_reg_tbl[DRP_ERRINT_STATUS_REG_NUM] =
+static const uint32_t drp_errint_status_reg_tbl[DRP_ERRINT_STATUS_REG_NUM] =
 {
     IDIF_EINT, IDIF_EINT_DSC, ODIF_EINT, IDMAC_INTSE,
     ODMAC_INTSE, RAC_EINTS
 };
-const static char* drp_errint_status_reg_name_tbl[DRP_ERRINT_STATUS_REG_NUM] =
+static const char* drp_errint_status_reg_name_tbl[DRP_ERRINT_STATUS_REG_NUM] =
 {
     "IDIF_EINT","IDIF_EINT_DSC","ODIF_EINT","IDMAC_INTSE",
     "ODMAC_INTSE","RAC_EINTS"
 };
 /* AI-MAC ERRINT */
-const static uint32_t aimac_errint_msk_reg_tbl[AIMAC_ERRINT_MSK_REG_NUM][2] =
+static const uint32_t aimac_errint_msk_reg_tbl[AIMAC_ERRINT_MSK_REG_NUM][2] =
 {
     {AID_IDIF_EINTMSK   ,0x07FEFEFE}, {AID_IDMAC_INTME      ,0x55550000},
     {AIMRAC_EINTM       ,0x00000000}, {CMDSEL_ERRMSK        ,0x00000000},
@@ -141,7 +141,7 @@ const static uint32_t aimac_errint_msk_reg_tbl[AIMAC_ERRINT_MSK_REG_NUM][2] =
     {EXD0_ODMAC_INTME   ,0x55550000}, {EXD1_ODMAC_INTME     ,0x55550000},
     {EXD0_RAC_EINTM     ,0x00000000}, {EXD1_RAC_EINTM       ,0x00000000},
 };
-const static uint32_t aimac_errint_status_reg_tbl[AIMAC_ERRINT_STATUS_REG_NUM] =
+static const uint32_t aimac_errint_status_reg_tbl[AIMAC_ERRINT_STATUS_REG_NUM] =
 {
     AID_IDIF_EINT,AID_IDMAC_INTSE,AIMRAC_EINTS,CMDSEL_ERRSTS,PRAM_INT,
     OSEL_DO_ESTS0,OSEL_DO_ESTS1,OSEL_DO_ESTS2,OSEL_DO_ESTS3,OSEL_DO_ESTS4,
@@ -151,7 +151,7 @@ const static uint32_t aimac_errint_status_reg_tbl[AIMAC_ERRINT_STATUS_REG_NUM] =
     EXD0_IDIF_EINT,EXD1_IDIF_EINT,EXD0_ODIF_EINT,EXD1_ODIF_EINT,EXD0_IDMAC_INTSE,
     EXD1_IDMAC_INTSE,EXD0_ODMAC_INTSE,EXD1_ODMAC_INTSE,EXD0_RAC_EINTS,EXD1_RAC_EINTS
 };
-const static char* aimac_errint_status_reg_name_tbl[AIMAC_ERRINT_STATUS_REG_NUM] =
+static const char* aimac_errint_status_reg_name_tbl[AIMAC_ERRINT_STATUS_REG_NUM] =
 {
     "AID_IDIF_EINT","AID_IDMAC_INTSE","AIMRAC_EINTS","CMDSEL_ERRSTS","PRAM_INT",
     "OSEL_DO_ESTS0","OSEL_DO_ESTS1","OSEL_DO_ESTS2","OSEL_DO_ESTS3","OSEL_DO_ESTS4",

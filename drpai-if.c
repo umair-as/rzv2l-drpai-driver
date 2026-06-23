@@ -38,6 +38,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>	/* edge fork: vmalloc/vfree no longer pulled in transitively on 6.x */
 #include <linux/wait.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
@@ -150,7 +151,12 @@
 
 /* A function called from the kernel */
 static int drpai_probe(struct platform_device *pdev);
+/* edge fork: 6.11 made platform_driver::remove return void. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void drpai_remove(struct platform_device *pdev);
+#else
 static int drpai_remove(struct platform_device *pdev);
+#endif
 static int drpai_open(struct inode *inode, struct file *file);
 static int drpai_close(struct inode *inode, struct file *file);
 static int drpai_flush(struct file *file, fl_owner_t id);
@@ -275,7 +281,12 @@ struct param_info_list
     struct param_info_list *next;
 };
 
+/* edge fork: 6.4 added the initial-count argument to DEFINE_SEMAPHORE(). */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+static DEFINE_SEMAPHORE(rw_sem, 1);
+#else
 static DEFINE_SEMAPHORE(rw_sem);
+#endif
 static struct drpai_rw_status *drpai_rw_sentinel;
 
 /* Virtual base address of register */
@@ -352,7 +363,11 @@ static int drpai_probe(struct platform_device *pdev)
     return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void drpai_remove(struct platform_device *pdev)
+#else
 static int drpai_remove(struct platform_device *pdev)
+#endif
 {
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -361,7 +376,9 @@ static int drpai_remove(struct platform_device *pdev)
 
     DRPAI_DEBUG_PRINT("end.\n");
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
     return 0;
+#endif
 }
 
 static int drpai_open(struct inode *inode, struct file *file)
@@ -1201,7 +1218,14 @@ static int drpai_regist_driver(void)
     }
 
     /* Cleate class "/sys/class/drpai/" */
+    /* edge fork: class_create() dropped its struct module *owner argument in
+     * kernel 6.4 (commit 1aaba11da9aa). Version-guarded so this source still
+     * builds against the original 5.10/6.1 trees as well as 6.12. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+    drpai_class = class_create(DRPAI_DRIVER_NAME);
+#else
     drpai_class = class_create(THIS_MODULE, DRPAI_DRIVER_NAME);
+#endif
     if (IS_ERR(drpai_class)) {
         ptr_err = PTR_ERR(drpai_class);
         pr_err("DRP-AI Driver: class_create = %d\n", ptr_err);
