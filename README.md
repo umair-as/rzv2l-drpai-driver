@@ -24,9 +24,7 @@ and `.gitignore` (all mine, not Renesas's).
 **GPL-2.0** (`MODULE_LICENSE("GPL v2")`; see `COPYING`). The UAPI header
 `include/uapi/linux/drpai.h` is `GPL-2.0 WITH Linux-syscall-note`. GPL-2.0
 permits redistribution and modification — this repository is one such
-redistribution. A public mirror of the same Renesas driver already exists at
-`Vekatech/renesas-rz_linux-cip` (branch `vkrzv2l_v2l_v5.10`, an older 5.10
-snapshot), which serves as redistribution precedent.
+redistribution.
 
 ## My modifications
 
@@ -72,6 +70,7 @@ Under Yocto, a `kernel-module-drpai` recipe drives the build against
 
 The module registers a platform driver matching DT `compatible =
 "renesas,rzv2l-drpai"` and creates the char device **`/dev/drpai0`**. The
-consuming system must provide the DRP-AI device-tree node plus its
-`reserved-memory` (CMA) region; those are board integration and live in the
-board's BSP, not here.
+consuming system must provide the DRP-AI device-tree node plus its dedicated
+`reserved-memory` carveout — the driver reads the region's base/size directly
+(`of_address_to_resource`), so it is `memblock_reserve`d, not a CMA pool; those
+are board integration and live in the board's BSP, not here.
