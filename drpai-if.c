@@ -832,10 +832,27 @@ static ssize_t drpai_read(struct file *filp, char __user *buf, size_t count, lof
                 result = -ETIMEDOUT;
                 goto end;
             }
+            /* edge fork: the loop below fills 4 bytes per step, so a count
+             * that is not a multiple of 4 overran kbuf; it also allocated
+             * whatever the caller asked for, and on allocation failure
+             * returned with priv->sem still held. Clamp to whole registers
+             * still left to dump and release the semaphore on that path. */
+            if (count > ((drp_size + aimac_size) - drpai_rw_status->read_count))
+            {
+                count = (drp_size + aimac_size) - drpai_rw_status->read_count;
+            }
+            count &= ~(size_t)3;
+            if (0 == count)
+            {
+                up(&priv->sem);
+                result = -EINVAL;
+                goto end;
+            }
             /* Secure Kbuf area */
             kbuf = vmalloc(count);
             if (NULL == kbuf)
             {
+                up(&priv->sem);
                 result = -ENOMEM;
                 goto end;
             }
@@ -871,7 +888,8 @@ static ssize_t drpai_read(struct file *filp, char __user *buf, size_t count, lof
             }
             up(&priv->sem);
             /* Copy arguments from kernel space to user space */
-            if (copy_to_user(buf, kbuf, count))
+            /* edge fork: copy only the i bytes the loop filled */
+            if (copy_to_user(buf, kbuf, i))
             {
                 result = -EFAULT;
                 goto end;
