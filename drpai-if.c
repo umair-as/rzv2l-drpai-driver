@@ -699,8 +699,12 @@ static ssize_t  drpai_write(struct file *filp, const char __user *buf, size_t co
                     result = -EFAULT;
                     goto end;
                 }
+                /* edge fork: v2.30 synced drpai_data.size here, which belongs to
+                 * the static ASSIGN path and is normally 0 on this one, so the
+                 * dynamic descriptor/param writes were never cleaned from the
+                 * CPU cache before the DRP-AI read them. */
                 dma_sync_single_for_device(drpai_dev, dma_addr,
-                                drpai_rw_status->drpai_data.size, DMA_TO_DEVICE);
+                                drpai_rw_status->drpai_data_dynamic.size, DMA_TO_DEVICE);
 
 
                 drpai_rw_status->rw_status = DRPAI_STATUS_IDLE_RW;
@@ -2830,8 +2834,9 @@ static bool drpai_in_region(uint64_t addr, uint64_t size)
 /* edge fork: the input image is the one buffer the DRP-AI may read from
  * outside the carveout (e.g. a camera frame in image_buf0). Require it to lie
  * wholly inside the carveout or the DT linux-memory-region, and to be in the
- * kernel linear map: drpai_flush_dcache_input_area() runs cache maintenance
- * on phys_to_virt() of it, which faults on a no-map region such as ramoops.
+ * kernel linear map: drpai_flush_dcache_input_area() syncs it for the
+ * device, and on this non-coherent arm64 SoC that is cache maintenance on its
+ * linear-map address, which faults on a no-map region such as ramoops.
  * This does not confine the descriptors' own DMA addresses. */
 static bool drpai_input_area_valid(uint64_t addr, uint64_t size)
 {
