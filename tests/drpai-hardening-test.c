@@ -3,8 +3,9 @@
  * Negative tests for the input-validation fixes in drpai-if.c.
  *
  * Each case sends one malformed request and checks that the driver rejects it.
- * Run as a user that can open /dev/drpai0, with no inference running (the
- * cases use scratch space 256 MiB into the drp_reserved carveout).
+ * Run as a user that can open /dev/drpai0, while no other client has it open:
+ * the cases write scratch space 256 MiB into the drp_reserved carveout and
+ * switch the device-global SET_SEQ mode (restored to AI mode at the end).
  *
  *   drpai-hardening-test            run every case (fixed driver only)
  *   drpai-hardening-test --vendor   skip the cases that corrupt kernel memory
@@ -126,15 +127,16 @@ static void t_crop_offset(void)
     drpai_crop_t c = { 1, 1, 0, 0, { scratch(0), OBJ_SIZE } };
     int fd = dev_open(), r;
 
+    /* the unfixed driver's stray writes land at obj + 4096 + 8..51 */
     memset(before, 0, sizeof(before));
-    carveout_write(scratch(0), before, sizeof(before));
+    carveout_write(scratch(4096), before, sizeof(before));
     r = load_param_info(fd, "OFFSET_ADD:4096,drp_lib:crop,\nOFFSET_ADD:4096,x,\n");
     if (!r)
         r = xioctl(fd, DRPAI_PREPOST_CROP, &c);
     report("PREPOST_CROP offset past obj -> EINVAL", r == -EINVAL, strerror(-r));
     close(fd);
-    carveout_read(scratch(0), after, sizeof(after));
-    report("PREPOST_CROP obj left untouched", !memcmp(before, after, sizeof(after)), NULL);
+    carveout_read(scratch(4096), after, sizeof(after));
+    report("PREPOST_CROP no write past obj", !memcmp(before, after, sizeof(after)), NULL);
 }
 
 /* PREPOST_INADDR with OFFSET_ADD past obj.size. */
@@ -356,7 +358,7 @@ int main(int argc, char **argv)
     area_size = area.size;
     printf("carveout 0x%08x size 0x%08x, scratch at 0x%08x%s\n",
            area_base, area_size, scratch(0), vendor ? " (vendor mode)" : "");
-    if (area_size <= SCRATCH_OFF + 0x200000) {
+    if (area_size <= SCRATCH_OFF + 0x400000) {
         fprintf(stderr, "carveout too small for the scratch area\n");
         return 2;
     }
