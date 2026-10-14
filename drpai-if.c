@@ -974,7 +974,8 @@ static long drpai_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 #endif /* DRPAI_CONFIG_ARCH_RZV2L */
     default:
         DRPAI_DEBUG_PRINT(KERN_WARNING "unsupported command %d\n", cmd);
-        result = -EFAULT;
+        /* edge fork: -ENOTTY is the errno for an unknown ioctl */
+        result = -ENOTTY;
         break;
     }
     goto end;
@@ -3191,6 +3192,9 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
         result = -EFAULT;
         goto end;
     }
+    /* edge fork: name is passed to strstr() below; terminate it so an
+     * unterminated name cannot read past the struct */
+    inout_param_buf.name[DRPAI_MAX_NODE_NAME - 1] = '\0';
     /* Check if there is in drpai dedicated area */
     if((drpai_rw_status->assign_param.obj.address != inout_param_buf.obj.address) ||
        (drpai_rw_status->assign_param.obj.size != inout_param_buf.obj.size))
