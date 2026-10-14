@@ -22,8 +22,9 @@ Two Renesas releases are imported verbatim, each in its own commit:
 `drpai-core.h`, `drpai-reg.h`, and both `drpai.h` headers are byte-identical to
 the v2.30 source. `drpai-core.c` carries only the `static const` reorders;
 `drpai-if.c` carries the forward-port and the fixes listed under
-*My modifications*. Each change is marked with an `edge fork:` comment in the
-source, named after [edge-ai-yocto](https://github.com/umair-as/edge-ai-yocto), the project this fork is maintained
+*My modifications*. The fixes are marked with `edge fork:` comments in the
+source (smaller follow-on edits, such as error-path cleanups, are not each
+marked), named after [edge-ai-yocto](https://github.com/umair-as/edge-ai-yocto), the project this fork is maintained
 for (see *Status*). Everything that is
 not a verbatim import is mine, not Renesas's: the forward-port, the fixes,
 this README, `Kbuild`, `Makefile`, `.gitignore` and `tests/`.
@@ -80,6 +81,12 @@ redistribution.
     NUL-terminated.
   - `probe` propagates errors and creates `/dev/drpai0` last; sysfs unbind is
     disabled.
+- **Behaviour changes callers may notice** (no public Renesas userspace is
+  affected): `SET_SEQ` with `num == 0` returns `-EINVAL`; a register-dump
+  `read()` shorter than 4 bytes returns `-EINVAL`; in DRP mode only the cfg
+  slots accept `DRPAI_DRP_NOLOAD` (0), a param slot with address 0 is rejected;
+  `close()` now waits for the driver's semaphores uninterruptibly instead of
+  giving up after 1 s (no path holds them across a running job).
 - **Fix for a v2.30 regression:** after a dynamic write, v2.30 synced the
   static path's size (normally 0) instead of the dynamic buffer's, so the
   descriptor and parameter data were not cleaned from the CPU cache before the
@@ -124,7 +131,8 @@ The module registers a platform driver matching DT `compatible =
 "renesas,rzv2l-drpai"` and creates the char device **`/dev/drpai0`**. The
 consuming system must provide the DRP-AI device-tree node plus its dedicated
 `reserved-memory` carveout — the driver reads the region's base/size directly
-(`of_address_to_resource`), so it is `memblock_reserve`d, not a CMA pool; those
+(`of_address_to_resource`). It is a plain reservation (`memblock_reserve`d, not a
+CMA pool) because the DT node has no `shared-dma-pool` compatible; those
 are board integration and live in the board's BSP, not here. In edge-ai-yocto
 the device-tree node and carveouts come from
 [this kernel patch](https://github.com/umair-as/edge-ai-yocto/blob/main/meta-edge-bsp/recipes-kernel/linux/files/patches/0006-arm64-dts-rzv2l-smarc-add-drpai-udmabuf-reserved-memory.patch),
@@ -135,7 +143,7 @@ and the device-node permissions from
 
 `tests/drpai-hardening-test.c` sends one malformed request per fixed input
 check and expects it to be rejected. Run it on the target as a user that can
-open `/dev/drpai0`, with no inference running; it uses scratch space 256 MiB
+open `/dev/drpai0`, while no other client has it open; it uses scratch space 256 MiB
 into the carveout. `--vendor` skips the cases that would corrupt kernel memory
 or start the engine on an unfixed driver, so the remaining cases can be run
 there to show the original behaviour. The build command is in the file header.
