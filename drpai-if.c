@@ -303,6 +303,9 @@ static resource_size_t sysctrl_region_base_addr;
 /* ISP */
 static char* p_dmabuf_vaddr;
 static dma_addr_t p_dmabuf_phyaddr;
+/* edge fork: the unadjusted allocation, for dma_free_coherent() */
+static void *p_dmabuf_alloc_vaddr;
+static dma_addr_t p_dmabuf_alloc_phyaddr;
 static unsigned char drp_single_desc_bin[] =
 {
   0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -2111,6 +2114,9 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
     dma_addr_t dma_addr;
     struct device *drpai_dev = &priv->pdev->dev;
     size_t offset = 0;
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
+    dma_addr_t drp_start_addr;
+#endif
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2318,9 +2324,14 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         dma_sync_single_for_device(drpai_dev, p_dmabuf_phyaddr, DRPAI_CMA_SIZE, DMA_TO_DEVICE);
 
         /* DRPcfg load skip */
+        /* edge fork: offset a local copy. Adding to p_dmabuf_phyaddr itself
+         * moved the descriptor base on every NOLOAD start, so the link
+         * pointers drifted out of the buffer and dma_free_coherent() was
+         * later handed the wrong address. */
+        drp_start_addr = p_dmabuf_phyaddr;
         if (DRPAI_DRP_NOLOAD == proc_drp[0].address)
         {
-            p_dmabuf_phyaddr = p_dmabuf_phyaddr + DRPAI_DESC_CMD_SIZE;
+            drp_start_addr = drp_start_addr + DRPAI_DESC_CMD_SIZE;
         }
 
         spin_lock_irqsave(&priv->lock, flags);
@@ -2333,8 +2344,8 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         DRPAI_DEBUG_PRINT("status2:   %d\n", priv->drpai_status.status);
 
         /* Kick */
-        (void)R_DRPAI_DRP_Start(drp_base_addr[0], 0, p_dmabuf_phyaddr);
-        (void)R_DRPAI_AIMAC_Start(aimac_base_address[0], 0, p_dmabuf_phyaddr + (DRPAI_SGL_DRP_DESC_SIZE * DRPAI_SEQ_NUM), &priv->lock);
+        (void)R_DRPAI_DRP_Start(drp_base_addr[0], 0, drp_start_addr);
+        (void)R_DRPAI_AIMAC_Start(aimac_base_address[0], 0, drp_start_addr + (DRPAI_SGL_DRP_DESC_SIZE * DRPAI_SEQ_NUM), &priv->lock);
     }
     else
     {
@@ -3447,6 +3458,8 @@ static int drpai_drp_config_init(void)
         result = -1;
         goto end;
     }
+    p_dmabuf_alloc_vaddr = p_dmabuf_vaddr;
+    p_dmabuf_alloc_phyaddr = p_dmabuf_phyaddr;
     DRPAI_DEBUG_PRINT("dmabuf:%px, dmaphys:%pad\n", p_dmabuf_vaddr, &p_dmabuf_phyaddr);
 
     /* 64bytes alignment adjustment */
@@ -3481,7 +3494,7 @@ static void drpai_drp_config_uninit(void)
 
     DRPAI_DEBUG_PRINT("start.\n");
 
-    dma_free_coherent(dev, DRPAI_CMA_SIZE, p_dmabuf_vaddr, p_dmabuf_phyaddr);
+    dma_free_coherent(dev, DRPAI_CMA_SIZE, p_dmabuf_alloc_vaddr, p_dmabuf_alloc_phyaddr);
     DRPAI_DEBUG_PRINT("end.\n");
 }
 
