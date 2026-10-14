@@ -3297,9 +3297,22 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
     long result = 0;
     struct drpai_priv *priv = drpai_priv;
     unsigned long flags;
+    drpai_seq_t seq_buf;
+    uint32_t mode;
 
     DRPAI_DEBUG_PRINT(" start.\n");
     DRPAI_DEBUG_PRINT(" status1:%d\n", priv->drpai_status.status);
+
+    /* edge fork: copy into a local and validate it before committing, and
+     * serialise with START through priv->sem. The old code copied straight
+     * into the global seq, so a rejected num stayed in place for the next
+     * START to index proc_drp[] and the descriptor buffer with, and num == 0
+     * was accepted. */
+    if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT)))
+    {
+        result = -ETIMEDOUT;
+        goto end;
+    }
 
     /* Check the internal state of DRP-AI */
     spin_lock_irqsave(&priv->lock, flags);
@@ -3312,26 +3325,26 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
     spin_unlock_irqrestore(&priv->lock, flags);
 
     /* Copy arguments from user space to kernel space */
-    if (copy_from_user(&seq, (void __user *)arg, sizeof(drpai_seq_t)))
+    if (copy_from_user(&seq_buf, (void __user *)arg, sizeof(drpai_seq_t)))
     {
         result = -EFAULT;
         goto end;
     }
 
     /* Check Argument DRP Simgle */
-    if (DRPAI_SEQ_NUM < seq.num)
+    if ((0 == seq_buf.num) || (DRPAI_SEQ_NUM < seq_buf.num))
     {
         result = -EINVAL;
         goto end;
     }
 
-    if (DRPAI_EXE_DRP == seq.order[0])
+    if (DRPAI_EXE_DRP == seq_buf.order[0])
     {
-        exe_mode = DRPAI_EXE_DRP;
+        mode = DRPAI_EXE_DRP;
     }
-    else if (DRPAI_EXE_AI == seq.order[0])
+    else if (DRPAI_EXE_AI == seq_buf.order[0])
     {
-        exe_mode = DRPAI_EXE_AI;
+        mode = DRPAI_EXE_AI;
     }
     else
     {
@@ -3339,10 +3352,20 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
         goto end;
     }
 
+    /* the DRP normal-interrupt handler reads both under priv->lock */
+    spin_lock_irqsave(&priv->lock, flags);
+    seq      = seq_buf;
+    exe_mode = mode;
+    spin_unlock_irqrestore(&priv->lock, flags);
+
     DRPAI_DEBUG_PRINT(" DRP exe mode:%d\n", exe_mode);
 
     DRPAI_DEBUG_PRINT(" status2:%d\n", priv->drpai_status.status);
 end:
+    if(-ETIMEDOUT != result)
+    {
+        up(&priv->sem);
+    }
     DRPAI_DEBUG_PRINT(" end.\n");
 
     return result;
