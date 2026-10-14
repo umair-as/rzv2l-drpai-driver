@@ -978,9 +978,11 @@ static unsigned int drpai_poll( struct file* filp, poll_table* wait )
 
     DRPAI_DEBUG_PRINT("start.\n");
 
-    spin_lock_irqsave(&priv->lock, flags);
-
+    /* edge fork: poll_wait() may allocate, so call it before taking the
+     * IRQ-safe spinlock rather than under it. */
     poll_wait( filp, &drpai_waitq,  wait );
+
+    spin_lock_irqsave(&priv->lock, flags);
 
     if (IRQ_CHECK_DISABLE == priv->irq_flag)
     {
