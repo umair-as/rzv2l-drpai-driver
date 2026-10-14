@@ -456,13 +456,11 @@ static int drpai_close(struct inode *inode, struct file *file)
     DRPAI_DEBUG_PRINT("start.\n");
     DRPAI_DEBUG_PRINT("major %d minor %d\n", imajor(inode), iminor(inode));
 
-    if(unlikely(down_interruptible(&rw_sem))) 
-    {
-        /* Note: this errno won't be returned to user*/
-        result = -ERESTART;
-        DRPAI_DEBUG_PRINT("R/W semaphore obtained failed\n");
-        goto end;
-    }
+    /* edge fork: release must not bail out before list_del() and the
+     * refcount drop below, so take both semaphores uninterruptibly instead of
+     * skipping the cleanup (and then freeing a still-listed entry) when the
+     * wait fails. */
+    down(&rw_sem);
 
     DRPAI_DEBUG_PRINT("HEAD  list %px rw_status %d prev %px next %px\n", &drpai_rw_sentinel->list, drpai_rw_sentinel->rw_status, drpai_rw_sentinel->list.prev, drpai_rw_sentinel->list.next);
     if(!list_empty(&drpai_rw_sentinel->list))
@@ -479,13 +477,7 @@ static int drpai_close(struct inode *inode, struct file *file)
     }
     up(&rw_sem);
 
-    if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
-    {
-        /* Note: this errno won't be returned to user*/
-        result = -ETIMEDOUT;
-        DRPAI_DEBUG_PRINT("API semaphore obtained failed\n");
-        goto end;
-    }
+    down(&priv->sem);
 
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
@@ -502,13 +494,9 @@ static int drpai_close(struct inode *inode, struct file *file)
 
     DRPAI_DEBUG_PRINT("status2:   %d\n", priv->drpai_status.status);
 
+    up(&priv->sem);
+
     DRPAI_DEBUG_WAIT();
-    goto end;
-end:
-    if((-ERESTART != result) || (-ETIMEDOUT != result))
-    {
-        up(&priv->sem);
-    }
     /* Free memory */
     if(NULL != drpai_rw_status->param_info)
     {
@@ -2842,6 +2830,7 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
     unsigned long offset_add1;
     int mode = 0;
     uint64_t addr;
+    int is_sema_locked = DRPAI_SEMA_STATUS_UNLOCKED;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2860,6 +2849,7 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
         result = -ERESTART;
         goto end;
     }
+    is_sema_locked = DRPAI_SEMA_STATUS_LOCKED;
     DRPAI_DEBUG_PRINT("status_rw1:%d\n", drpai_rw_status->rw_status);
 
     /* Check NULL */
@@ -3003,7 +2993,9 @@ end:
     {
         vfree(buf);
     }
-    if((-EBUSY != result) || (-ERESTART != result))
+    /* edge fork: the old (-EBUSY != r) || (-ERESTART != r) test was always
+     * true, so rw_sem was released even on the paths that never took it. */
+    if(DRPAI_SEMA_STATUS_LOCKED == is_sema_locked)
     {
         up(&rw_sem);
     }
@@ -3025,6 +3017,7 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
     unsigned long flags;
     unsigned long offset_add;
     uint64_t addr, size;
+    int is_sema_locked = DRPAI_SEMA_STATUS_UNLOCKED;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -3043,6 +3036,7 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
         result = -ERESTART;
         goto end;
     }
+    is_sema_locked = DRPAI_SEMA_STATUS_LOCKED;
     DRPAI_DEBUG_PRINT("status_rw1:%d\n", drpai_rw_status->rw_status);
 
     /* Check NULL */
@@ -3157,7 +3151,9 @@ end:
     {
         vfree(buf);
     }
-    if((-EBUSY != result) || (-ERESTART != result))
+    /* edge fork: the old (-EBUSY != r) || (-ERESTART != r) test was always
+     * true, so rw_sem was released even on the paths that never took it. */
+    if(DRPAI_SEMA_STATUS_LOCKED == is_sema_locked)
     {
         up(&rw_sem);
     }
