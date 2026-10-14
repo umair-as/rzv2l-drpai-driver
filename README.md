@@ -22,7 +22,9 @@ Two Renesas releases are imported verbatim, each in its own commit:
 `drpai-core.h`, `drpai-reg.h`, and both `drpai.h` headers are byte-identical to
 the v2.30 source. `drpai-core.c` carries only the `static const` reorders;
 `drpai-if.c` carries the forward-port and the fixes listed under
-*My modifications*, each marked `edge fork:` in the source. Everything that is
+*My modifications*. Each change is marked with an `edge fork:` comment in the
+source, named after [edge-ai-yocto](https://github.com/umair-as/edge-ai-yocto), the project this fork is maintained
+for (see *Status*). Everything that is
 not a verbatim import is mine, not Renesas's: the forward-port, the fixes,
 this README, `Kbuild`, `Makefile`, `.gitignore` and `tests/`.
 
@@ -89,8 +91,9 @@ needs the kernel to export the arm64 `dcache_*_poc` ops.
 
 ## Status
 
-**Unmaintained. No support. No warranty.** Carried for my own RZ/V2L board
-bring-up on a linux-cip 6.12 boot chain. Not affiliated with or endorsed by
+**Unmaintained. No support. No warranty.** Carried for
+[edge-ai-yocto](https://github.com/umair-as/edge-ai-yocto), my Yocto BSP and edge-AI distribution for the
+RZ/V2L, on a linux-cip 6.12 boot chain. Not affiliated with or endorsed by
 Renesas. Use at your own risk.
 
 **Treat access to `/dev/drpai0` as equivalent to root.** The hardening above
@@ -112,7 +115,8 @@ make KERNEL_SRC=/path/to/linux ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 ```
 
 Under Yocto, a `kernel-module-drpai` recipe drives the build against
-`virtual/kernel` instead.
+`virtual/kernel` instead. edge-ai-yocto's recipe is
+[`kernel-module-drpai_git.bb`](https://github.com/umair-as/edge-ai-yocto/blob/main/meta-edge-bsp/recipes-kernel/kernel-module-drpai/kernel-module-drpai_git.bb).
 
 ## Runtime
 
@@ -121,7 +125,11 @@ The module registers a platform driver matching DT `compatible =
 consuming system must provide the DRP-AI device-tree node plus its dedicated
 `reserved-memory` carveout — the driver reads the region's base/size directly
 (`of_address_to_resource`), so it is `memblock_reserve`d, not a CMA pool; those
-are board integration and live in the board's BSP, not here.
+are board integration and live in the board's BSP, not here. In edge-ai-yocto
+the device-tree node and carveouts come from
+[this kernel patch](https://github.com/umair-as/edge-ai-yocto/blob/main/meta-edge-bsp/recipes-kernel/linux/files/patches/0006-arm64-dts-rzv2l-smarc-add-drpai-udmabuf-reserved-memory.patch),
+and the device-node permissions from
+[this udev rule](https://github.com/umair-as/edge-ai-yocto/blob/main/meta-edge-bsp/recipes-support/edge-drpai-udev/files/71-edge-drpai.rules).
 
 ## Tests
 
