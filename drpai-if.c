@@ -351,6 +351,11 @@ static struct platform_driver drpai_platform_driver =
     .driver = {
         .name   = "drpai-rz",
         .of_match_table = drpai_match,
+        /* edge fork: remove() does not quiesce the engine or free the
+         * global state, so do not allow a sysfs unbind while it may be in
+         * use. Module unload still requires every fd to be closed, and the
+         * last close resets the engine and gates its clocks. */
+        .suppress_bind_attrs = true,
     },
     .probe      = drpai_probe,
     .remove     = drpai_remove,
