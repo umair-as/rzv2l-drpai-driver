@@ -200,6 +200,7 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
 static char *get_param_attr(char *line, char *attr, unsigned long *rvalue, char **str);
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value);
 static int8_t drp_param_change32(uint64_t base, uint64_t offset, uint32_t value);
+static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_t width, uint32_t obj_size);
 static int8_t drpai_flush_dcache_input_area(uint64_t addr, uint64_t size);
 static int drpai_drp_cpg_init(void);
 static int8_t drpai_get_sys_bank(uint64_t *bank);
@@ -1726,7 +1727,14 @@ static ssize_t drpai_write_dynamic_param(struct file *filp, uint8_t *pvirt)
                 if((0 == is_raddr) || (0 == is_waddr) || ((NULL != paddr) && ('\0' == *paddr)))
                 {
                     pbuf = get_param_attr(pbuf, DRP_PARAM_ATTR_OFFSET, &param_offset, NULL);
-                    if(NULL != pbuf)
+                    /* edge fork: the sum used to be truncated to the 32-bit list
+                     * offset, so a large OFFSET_ADD wrapped past the
+                     * (offset + 4) <= size check below. Skip entries that do
+                     * not fit, as that check already does for smaller ones. */
+                    if((NULL != pbuf) &&
+                       (offset_add   <= drpai_rw_status->drpai_data_dynamic.size) &&
+                       (param_offset <= drpai_rw_status->drpai_data_dynamic.size) &&
+                       (((uint64_t)offset_add + param_offset + sizeof(uint32_t)) <= drpai_rw_status->drpai_data_dynamic.size))
                     {
                         DRPAI_DEBUG_PRINT("offset_add = %lu, param_name = %s, param_offset = %lu\n", offset_add, param_name, param_offset);
                         list_cur = param_info_list_push(&list_top, list_cur, offset_add + param_offset);
@@ -2706,6 +2714,16 @@ end:
     return result;
 }
 
+/* edge fork: offset_add comes from the caller-supplied *_param_info.txt and
+ * was used unchecked, so PREPOST_CROP / PREPOST_INADDR could write anywhere in
+ * the linear map. Require offset_add + field + width to stay inside the
+ * parameter object (offset_add <= obj_size keeps the sum from overflowing). */
+static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_t width, uint32_t obj_size)
+{
+    return (offset_add <= obj_size) &&
+           (((uint64_t)offset_add + field + width) <= obj_size);
+}
+
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value)
 {
     int8_t result = 0;
@@ -2963,6 +2981,18 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
 
     DRPAI_DEBUG_PRINT("offset_add0 = %lu, offset_add1 = %lu\n", offset_add0, offset_add1);
 
+    /* Every field written below must lie inside drp_param.bin */
+    if (!drpai_param_in_obj(offset_add0, DRP_PARAM_IMG_OWIDTH,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_IMG_OHEIGHT,  sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_CROP_POS_X,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_CROP_POS_Y,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add1, DRP_PARAM_IMG_IWIDTH,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add1, DRP_PARAM_IMG_IHEIGHT,  sizeof(uint16_t), crop_param_buf.obj.size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
+
     /* Change parameters of drp_param.bin to value specified by user app. */
     addr = priv->bank | (uint64_t)crop_param_buf.obj.address;
     if(0 != drp_param_change16(addr, (uint64_t)offset_add0 + DRP_PARAM_IMG_OWIDTH, crop_param_buf.img_owidth))
@@ -3136,6 +3166,13 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
     }
 
     DRPAI_DEBUG_PRINT("offset_add = %lu\n", offset_add);
+
+    /* The raddr field written below must lie inside drp_param.bin */
+    if (!drpai_param_in_obj(offset_add, DRP_PARAM_raddr, sizeof(uint32_t), inout_param_buf.obj.size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
 
     /* Check if input is in linux memory region */
     addr = priv->bank | (uint64_t)inout_param_buf.data.address;
