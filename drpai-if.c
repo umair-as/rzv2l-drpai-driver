@@ -38,6 +38,7 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>	/* edge fork: vmalloc/vfree no longer pulled in transitively on 6.x */
+#include <linux/pfn.h>
 #include <linux/wait.h>
 #include <linux/buffer_head.h>
 #include <linux/delay.h>
@@ -201,6 +202,8 @@ static char *get_param_attr(char *line, char *attr, unsigned long *rvalue, char 
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value);
 static int8_t drp_param_change32(uint64_t base, uint64_t offset, uint32_t value);
 static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_t width, uint32_t obj_size);
+static bool drpai_in_region(uint64_t addr, uint64_t size);
+static bool drpai_input_area_valid(uint64_t addr, uint64_t size);
 static int8_t drpai_flush_dcache_input_area(uint64_t addr, uint64_t size);
 static int drpai_drp_cpg_init(void);
 static int8_t drpai_get_sys_bank(uint64_t *bank);
@@ -2183,6 +2186,16 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
                     goto end;
                 }
         }
+        /* edge fork: the link-descriptor patch below writes at desc + size - 13
+         * and the input-address patch writes 4 bytes at drp_param, so a zero
+         * or short size wrote just below the carveout. */
+        if ((DRP_DESC_ENTRY_SIZE > proc[DRPAI_INDEX_DRP_DESC].size) ||
+            (DRP_DESC_ENTRY_SIZE > proc[DRPAI_INDEX_AIMAC_DESC].size) ||
+            (sizeof(uint32_t) > proc[DRPAI_INDEX_DRP_PARAM].size))
+        {
+            result = -EINVAL;
+            goto end;
+        }
 
         /* Check if input is in linux memory region */
         if(0 == atomic_read(&drpai_rw_status->inout_flag))
@@ -2190,6 +2203,11 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
             DRPAI_DEBUG_PRINT("Use arg variable\n");
             addr = priv->bank | (uint64_t)proc[DRPAI_INDEX_INPUT].address;
             size = (uint64_t)proc[DRPAI_INDEX_INPUT].size;
+            if (!drpai_input_area_valid(addr, size))
+            {
+                result = -EINVAL;
+                goto end;
+            }
             if(0 != drpai_flush_dcache_input_area(addr, size))
             {
                 result = -EFAULT;
@@ -2290,6 +2308,19 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         for (i = 0; i < (seq.num * 2); i++)
         {
             if (0 != (proc_drp[i].address & DRPAI_64BYTE_ALIGN))
+            {
+                result = -EINVAL;
+                goto end;
+            }
+            /* edge fork: DRPcfg (even index) and DRP param (odd index) were
+             * only alignment-checked; keep them inside the carveout like the
+             * AI-mode objects. DRPAI_DRP_NOLOAD (0) on a DRPcfg slot is the
+             * skip-load sentinel and is not an address. */
+            if ((0 == (i % 2)) && (DRPAI_DRP_NOLOAD == proc_drp[i].address))
+            {
+                continue;
+            }
+            if (!drpai_in_region(priv->bank | (uint64_t)proc_drp[i].address, (uint64_t)proc_drp[i].size))
             {
                 result = -EINVAL;
                 goto end;
@@ -2722,6 +2753,44 @@ static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_
 {
     return (offset_add <= obj_size) &&
            (((uint64_t)offset_add + field + width) <= obj_size);
+}
+
+/* edge fork: [addr, addr + size) lies inside the drp_reserved carveout,
+ * with the same exclusive end as the existing range checks. */
+static bool drpai_in_region(uint64_t addr, uint64_t size)
+{
+    return (drpai_region_base_addr <= addr) &&
+           ((addr + size) < (drpai_region_base_addr + drpai_region_size));
+}
+
+/* edge fork: the input image is the one buffer the DRP-AI may read from
+ * outside the carveout (e.g. a camera frame in image_buf0). Require it to lie
+ * wholly inside the carveout or the DT linux-memory-region, and to be in the
+ * kernel linear map: drpai_flush_dcache_input_area() runs cache maintenance
+ * on phys_to_virt() of it, which faults on a no-map region such as ramoops.
+ * This does not confine the descriptors' own DMA addresses. */
+static bool drpai_input_area_valid(uint64_t addr, uint64_t size)
+{
+    unsigned long pfn;
+
+    if ((0 == size) || ((addr + size) < addr))
+    {
+        return false;
+    }
+    if (!drpai_in_region(addr, size) &&
+        !((drpai_linux_mem_start <= addr) &&
+          ((addr + size) <= (drpai_linux_mem_start + drpai_linux_mem_size))))
+    {
+        return false;
+    }
+    for (pfn = PFN_DOWN(addr); pfn <= PFN_DOWN(addr + size - 1); pfn++)
+    {
+        if (!pfn_is_map_memory(pfn))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value)
@@ -3177,6 +3246,11 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
     /* Check if input is in linux memory region */
     addr = priv->bank | (uint64_t)inout_param_buf.data.address;
     size = (uint64_t)inout_param_buf.data.size;
+    if (!drpai_input_area_valid(addr, size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
     if(0 != drpai_flush_dcache_input_area(addr, size))
     {
         result = -EFAULT;
