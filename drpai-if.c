@@ -14,7 +14,6 @@
  * GNU General Public License for more details.
  */
 
-#include <asm/cacheflush.h>
 #include <asm/current.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -39,14 +38,14 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>	/* edge fork: vmalloc/vfree no longer pulled in transitively on 6.x */
+#include <linux/pfn.h>
 #include <linux/wait.h>
-#include <linux/fs.h>
-#include <asm/uaccess.h>
 #include <linux/buffer_head.h>
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/reset.h>
 #include <linux/version.h>
+#include <linux/dma-direct.h>
 #include <linux/drpai.h>    /* Header file for DRP-AI Driver */
 #include "drpai-core.h"     /* Header file for DRP-AI Core */
 
@@ -70,7 +69,7 @@
 #endif
 
 /*Macro definitions*/
-#define DRPAI_DRIVER_VERSION        "2.20 rel.3"
+#define DRPAI_DRIVER_VERSION        "2.30 rel.1"
 #define DRPAI_DEV_NUM               (1)
 #define DRPAI_DRIVER_NAME           "drpai"     /* Device name */
 #define DRPAI_64BYTE_ALIGN          (0x3F)      /* Check 64-byte alignment */
@@ -143,11 +142,11 @@
 #define DRPAI_SEMA_STATUS_UNLOCKED  (0)
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 #define DRPAI_SGL_DRP_DESC_SIZE     (80)
 #define DRPAI_DESC_CMD_SIZE         (16)
 #define DRPAI_CMA_SIZE              ((DRPAI_SGL_DRP_DESC_SIZE * DRPAI_SEQ_NUM) + DRPAI_DESC_CMD_SIZE + 64)
-#endif /* CONFIG_ARCH_R9A07G054  */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L  */
 
 /* A function called from the kernel */
 static int drpai_probe(struct platform_device *pdev);
@@ -168,9 +167,9 @@ static irqreturn_t irq_drp_errint(int irq, void *dev);
 static irqreturn_t irq_mac_nmlint(int irq, void *dev);
 static irqreturn_t irq_mac_errint(int irq, void *dev);
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 static irqreturn_t irq_drp_nmlint(int irq, void *dev);
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 /* Internal function */
 static int drpai_regist_driver(void);
@@ -196,12 +195,15 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
 static long drpai_ioctl_assign_dynamic(struct file *filp, unsigned int cmd, unsigned long arg);
 static long drpai_ioctl_get_drpai_area(struct file *filp, unsigned int cmd, unsigned long arg);
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned long arg);
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 static char *get_param_attr(char *line, char *attr, unsigned long *rvalue, char **str);
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value);
 static int8_t drp_param_change32(uint64_t base, uint64_t offset, uint32_t value);
+static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_t width, uint32_t obj_size);
+static bool drpai_in_region(uint64_t addr, uint64_t size);
+static bool drpai_input_area_valid(uint64_t addr, uint64_t size);
 static int8_t drpai_flush_dcache_input_area(uint64_t addr, uint64_t size);
 static int drpai_drp_cpg_init(void);
 static int8_t drpai_get_sys_bank(uint64_t *bank);
@@ -209,7 +211,7 @@ static int drpai_open_process(void);
 static int drpai_close_process(void);
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* DRP init function for V2L simple ISP */
 static int drpai_drp_config_init(void);
 static void drpai_drp_config_uninit(void);
@@ -218,7 +220,7 @@ static void drpai_drp_config_uninit(void);
 int drpai_open_k(void);
 int drpai_close_k(void);
 int drpai_start_k(drpai_data_t *arg, void (*isp_finish)(int result));
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 /* Linux device driver initialization */
 static const unsigned int MINOR_BASE = 0;
@@ -245,7 +247,7 @@ struct drpai_priv
     uint32_t irq_flag;
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* V2L ISP */
     struct clk *clk_int;
     struct clk *clk_aclk_drp;
@@ -253,7 +255,7 @@ struct drpai_priv
     struct clk *clk_dclkin;
     struct clk *clk_aclk;
     void (*isp_finish_loc)(int);
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 };
 
 static DECLARE_WAIT_QUEUE_HEAD(drpai_waitq);
@@ -301,10 +303,13 @@ static resource_size_t drpai_linux_mem_size;
 static resource_size_t sysctrl_region_base_addr;
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* ISP */
 static char* p_dmabuf_vaddr;
 static dma_addr_t p_dmabuf_phyaddr;
+/* edge fork: the unadjusted allocation, for dma_free_coherent() */
+static void *p_dmabuf_alloc_vaddr;
+static dma_addr_t p_dmabuf_alloc_phyaddr;
 static unsigned char drp_single_desc_bin[] =
 {
   0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -318,7 +323,7 @@ static drpai_seq_t seq;
 drpai_odif_intcnto_t odif_intcnto;
 static uint32_t exe_mode;
 /* ISP */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 /* handler table */
 static struct file_operations s_mydevice_fops = 
@@ -346,6 +351,11 @@ static struct platform_driver drpai_platform_driver =
     .driver = {
         .name   = "drpai-rz",
         .of_match_table = drpai_match,
+        /* edge fork: remove() does not quiesce the engine or free the
+         * global state, so do not allow a sysfs unbind while it may be in
+         * use. Module unload still requires every fd to be closed, and the
+         * last close resets the engine and gates its clocks. */
+        .suppress_bind_attrs = true,
     },
     .probe      = drpai_probe,
     .remove     = drpai_remove,
@@ -353,14 +363,34 @@ static struct platform_driver drpai_platform_driver =
 
 static int drpai_probe(struct platform_device *pdev)
 {
+    int ret;
+
     DRPAI_DEBUG_PRINT("start.\n");
 
-    drpai_regist_driver();
-    drpai_regist_device(pdev);
+    /* edge fork: both return values were ignored and probe always returned
+     * 0, and /dev/drpai0 was created before the device state existed. Set up
+     * the device first, publish the char device last, and fail the probe
+     * (including -EPROBE_DEFER) when either step fails. */
+    ret = drpai_regist_device(pdev);
+    if (ret)
+    {
+        goto err;
+    }
+    ret = drpai_regist_driver();
+    if (ret)
+    {
+        goto err;
+    }
 
     DRPAI_DEBUG_PRINT("end.\n");
 
     return 0;
+err:
+    /* devm frees priv and the sentinel when probe fails; do not leave the
+     * globals pointing at them for drpai_open_k() and friends */
+    drpai_priv = NULL;
+    drpai_rw_sentinel = NULL;
+    return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
@@ -458,13 +488,11 @@ static int drpai_close(struct inode *inode, struct file *file)
     DRPAI_DEBUG_PRINT("start.\n");
     DRPAI_DEBUG_PRINT("major %d minor %d\n", imajor(inode), iminor(inode));
 
-    if(unlikely(down_interruptible(&rw_sem))) 
-    {
-        /* Note: this errno won't be returned to user*/
-        result = -ERESTART;
-        DRPAI_DEBUG_PRINT("R/W semaphore obtained failed\n");
-        goto end;
-    }
+    /* edge fork: release must not bail out before list_del() and the
+     * refcount drop below, so take both semaphores uninterruptibly instead of
+     * skipping the cleanup (and then freeing a still-listed entry) when the
+     * wait fails. */
+    down(&rw_sem);
 
     DRPAI_DEBUG_PRINT("HEAD  list %px rw_status %d prev %px next %px\n", &drpai_rw_sentinel->list, drpai_rw_sentinel->rw_status, drpai_rw_sentinel->list.prev, drpai_rw_sentinel->list.next);
     if(!list_empty(&drpai_rw_sentinel->list))
@@ -481,13 +509,7 @@ static int drpai_close(struct inode *inode, struct file *file)
     }
     up(&rw_sem);
 
-    if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
-    {
-        /* Note: this errno won't be returned to user*/
-        result = -ETIMEDOUT;
-        DRPAI_DEBUG_PRINT("API semaphore obtained failed\n");
-        goto end;
-    }
+    down(&priv->sem);
 
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
@@ -504,13 +526,9 @@ static int drpai_close(struct inode *inode, struct file *file)
 
     DRPAI_DEBUG_PRINT("status2:   %d\n", priv->drpai_status.status);
 
+    up(&priv->sem);
+
     DRPAI_DEBUG_WAIT();
-    goto end;
-end:
-    if((-ERESTART != result) || (-ETIMEDOUT != result))
-    {
-        up(&priv->sem);
-    }
     /* Free memory */
     if(NULL != drpai_rw_status->param_info)
     {
@@ -541,9 +559,12 @@ static ssize_t  drpai_write(struct file *filp, const char __user *buf, size_t co
 {
     ssize_t result = 0;
     volatile void *p_drpai_cma = 0;
-    struct drpai_priv *priv = drpai_priv;
     struct drpai_rw_status *drpai_rw_status = filp->private_data;
     uint64_t addr;
+    dma_addr_t dma_addr;
+    struct drpai_priv *priv = drpai_priv;
+    struct device *drpai_dev = &priv->pdev->dev;
+
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -624,17 +645,15 @@ static ssize_t  drpai_write(struct file *filp, const char __user *buf, size_t co
             /* DRPAI_STATUS_WRITE -> DRPAI_STATUS_IDLE_RW */
             if (drpai_rw_status->drpai_data.size <= drpai_rw_status->write_count)
             {
-                p_drpai_cma = phys_to_virt(addr);
-                if (p_drpai_cma == 0)
+                dma_addr = phys_to_dma(drpai_dev, addr);
+                if(dma_mapping_error(drpai_dev, dma_addr))
                 {
                     result = -EFAULT;
                     goto end;
                 }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-                dcache_clean_inval_poc((unsigned long)p_drpai_cma, (unsigned long)p_drpai_cma + drpai_rw_status->drpai_data.size);
-#else
-                __flush_dcache_area((void *)p_drpai_cma, drpai_rw_status->drpai_data.size);
-#endif
+                dma_sync_single_for_device(drpai_dev, dma_addr,
+                                drpai_rw_status->drpai_data.size, DMA_TO_DEVICE);
+
                 drpai_rw_status->rw_status = DRPAI_STATUS_IDLE_RW;
                 DRPAI_DEBUG_PRINT("Deleted list %px rw_status %d prev %px next %px\n", &drpai_rw_status->list, drpai_rw_status->rw_status, drpai_rw_status->list.prev, drpai_rw_status->list.next);
                 list_del(&drpai_rw_status->list);
@@ -680,11 +699,20 @@ static ssize_t  drpai_write(struct file *filp, const char __user *buf, size_t co
                     goto end;
                 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-                dcache_clean_inval_poc((unsigned long)p_drpai_cma, (unsigned long)p_drpai_cma + drpai_rw_status->drpai_data_dynamic.size);
-#else
-                __flush_dcache_area((void *)p_drpai_cma, drpai_rw_status->drpai_data_dynamic.size);
-#endif
+                dma_addr = phys_to_dma(drpai_dev, addr);
+                if(dma_mapping_error(drpai_dev, dma_addr))
+                {
+                    result = -EFAULT;
+                    goto end;
+                }
+                /* edge fork: v2.30 synced drpai_data.size here, which belongs to
+                 * the static ASSIGN path and is normally 0 on this one, so the
+                 * dynamic descriptor/param writes were never cleaned from the
+                 * CPU cache before the DRP-AI read them. */
+                dma_sync_single_for_device(drpai_dev, dma_addr,
+                                drpai_rw_status->drpai_data_dynamic.size, DMA_TO_DEVICE);
+
+
                 drpai_rw_status->rw_status = DRPAI_STATUS_IDLE_RW;
                 DRPAI_DEBUG_PRINT("Deleted list %px rw_status %d prev %px next %px\n", &drpai_rw_status->list, drpai_rw_status->rw_status, drpai_rw_status->list.prev, drpai_rw_status->list.next);
                 list_del(&drpai_rw_status->list);
@@ -833,10 +861,27 @@ static ssize_t drpai_read(struct file *filp, char __user *buf, size_t count, lof
                 result = -ETIMEDOUT;
                 goto end;
             }
+            /* edge fork: the loop below fills 4 bytes per step, so a count
+             * that is not a multiple of 4 overran kbuf; it also allocated
+             * whatever the caller asked for, and on allocation failure
+             * returned with priv->sem still held. Clamp to whole registers
+             * still left to dump and release the semaphore on that path. */
+            if (count > ((drp_size + aimac_size) - drpai_rw_status->read_count))
+            {
+                count = (drp_size + aimac_size) - drpai_rw_status->read_count;
+            }
+            count &= ~(size_t)3;
+            if (0 == count)
+            {
+                up(&priv->sem);
+                result = -EINVAL;
+                goto end;
+            }
             /* Secure Kbuf area */
             kbuf = vmalloc(count);
             if (NULL == kbuf)
             {
+                up(&priv->sem);
                 result = -ENOMEM;
                 goto end;
             }
@@ -872,7 +917,8 @@ static ssize_t drpai_read(struct file *filp, char __user *buf, size_t count, lof
             }
             up(&priv->sem);
             /* Copy arguments from kernel space to user space */
-            if (copy_to_user(buf, kbuf, count))
+            /* edge fork: copy only the i bytes the loop filled */
+            if (copy_to_user(buf, kbuf, i))
             {
                 result = -EFAULT;
                 goto end;
@@ -949,15 +995,16 @@ static long drpai_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         result = drpai_ioctl_get_drpai_area(filp, cmd, arg);
         break;
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     case DRPAI_SET_SEQ:
         DRPAI_DEBUG_PRINT("[ioctl(DRPAI_SET_SEQ)]\n");
         result = drpai_ioctl_set_seq(filp, cmd, arg);
         break;
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
     default:
         DRPAI_DEBUG_PRINT(KERN_WARNING "unsupported command %d\n", cmd);
-        result = -EFAULT;
+        /* edge fork: -ENOTTY is the errno for an unknown ioctl */
+        result = -ENOTTY;
         break;
     }
     goto end;
@@ -974,9 +1021,11 @@ static unsigned int drpai_poll( struct file* filp, poll_table* wait )
 
     DRPAI_DEBUG_PRINT("start.\n");
 
-    spin_lock_irqsave(&priv->lock, flags);
-
+    /* edge fork: poll_wait() may allocate, so call it before taking the
+     * IRQ-safe spinlock rather than under it. */
     poll_wait( filp, &drpai_waitq,  wait );
+
+    spin_lock_irqsave(&priv->lock, flags);
 
     if (IRQ_CHECK_DISABLE == priv->irq_flag)
     {
@@ -990,7 +1039,7 @@ static unsigned int drpai_poll( struct file* filp, poll_table* wait )
 }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 static irqreturn_t irq_drp_nmlint(int irq, void *dev)
 {
     unsigned long flags;
@@ -1071,30 +1120,30 @@ static irqreturn_t irq_drp_nmlint(int irq, void *dev)
 
     return IRQ_HANDLED;
 }
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 static irqreturn_t irq_drp_errint(int irq, void *dev)
 {
     unsigned long flags;
     struct drpai_priv *priv = drpai_priv;
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     void (*finish_callback)(int); /* For error simple ISP call back*/
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     DRPAI_DEBUG_PRINT("start.\n");
 
     spin_lock_irqsave(&priv->lock, flags);
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     finish_callback = priv->isp_finish_loc;
 
     if(NULL != finish_callback)
     {
         (*finish_callback)(-EIO);
     }
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
@@ -1106,7 +1155,7 @@ static irqreturn_t irq_drp_errint(int irq, void *dev)
     priv->drpai_status.status = DRPAI_STATUS_IDLE;
     priv->irq_flag = IRQ_CHECK_DISABLE;
 
-#if defined(CONFIG_ARCH_R9A07G054)
+#if defined(DRPAI_CONFIG_ARCH_RZV2L)
     /* V2L conditional compilation */
     /* Wake up the process when it's not ISP mode*/
     if(NULL == finish_callback)
@@ -1114,7 +1163,7 @@ static irqreturn_t irq_drp_errint(int irq, void *dev)
         wake_up_interruptible( &drpai_waitq );
     }
     priv->isp_finish_loc = NULL;
-#elif defined(CONFIG_ARCH_R9A09G011) || defined(CONFIG_ARCH_R9A09G055)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2M) || defined(DRPAI_CONFIG_ARCH_RZV2MA)
     /* V2M(A) conditional compilation */
     /* Wake up the process */
     wake_up_interruptible( &drpai_waitq );
@@ -1198,7 +1247,7 @@ static int drpai_regist_driver(void)
     alloc_ret = alloc_chrdev_region(&dev, MINOR_BASE, MINOR_NUM, DRPAI_DRIVER_NAME);
     if (alloc_ret != 0) {
         pr_err("DRP-AI Driver: alloc_chrdev_region = %d\n", alloc_ret);
-        return -1;
+        return alloc_ret;
     }
 
     /* Save major number. */
@@ -1214,7 +1263,7 @@ static int drpai_regist_driver(void)
     if (cdev_err != 0) {
         pr_err("DRP-AI Driver: cdev_add = %d\n", cdev_err);
         unregister_chrdev_region(dev, MINOR_NUM);
-        return -1;
+        return cdev_err;
     }
 
     /* Cleate class "/sys/class/drpai/" */
@@ -1231,13 +1280,24 @@ static int drpai_regist_driver(void)
         pr_err("DRP-AI Driver: class_create = %d\n", ptr_err);
         cdev_del(&drpai_cdev);
         unregister_chrdev_region(dev, MINOR_NUM);
-        return -1;
+        return ptr_err;
     }
 
     /* Make "/sys/class/drpai/drpai*" */
     for (minor = MINOR_BASE; minor < MINOR_BASE + MINOR_NUM; minor++) {
         drpai_device_array[minor - MINOR_BASE] =
         device_create(drpai_class, NULL, MKDEV(drpai_major, minor), NULL, DRPAI_DRIVER_NAME "%d", minor);
+        if (IS_ERR(drpai_device_array[minor - MINOR_BASE])) {
+            ptr_err = PTR_ERR(drpai_device_array[minor - MINOR_BASE]);
+            pr_err("DRP-AI Driver: device_create = %d\n", ptr_err);
+            while (--minor >= (int)MINOR_BASE) {
+                device_destroy(drpai_class, MKDEV(drpai_major, minor));
+            }
+            class_destroy(drpai_class);
+            cdev_del(&drpai_cdev);
+            unregister_chrdev_region(dev, MINOR_NUM);
+            return ptr_err;
+        }
     }
 
     DRPAI_DEBUG_PRINT("end.\n");
@@ -1315,6 +1375,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Convert register region to a struct resource */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No memory address assigned to the region\n");
         return -ENOMEM;
@@ -1331,6 +1392,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Convert memory region to a struct resource */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No memory address assigned to the region\n");
         return -ENOMEM;
@@ -1348,6 +1410,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* read linux start address and size */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No address assigned to the linux-memory-region\n");
         return -ENOMEM;
@@ -1388,18 +1451,27 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Registering an interrupt handler */
     irq = platform_get_irq(pdev, 1);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_drp_errint, 0, "drpa errint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
         return ret;
     }
     irq = platform_get_irq(pdev, 2);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_mac_nmlint, 0, "drpa mac_nmlint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
         return ret;
     }
     irq = platform_get_irq(pdev, 3);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_mac_errint, 0, "drpa mac_errint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
@@ -1407,9 +1479,12 @@ static int drpai_regist_device(struct platform_device *pdev)
     }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 
     irq = platform_get_irq(pdev, 0);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_drp_nmlint, 0, "drpa nmlint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
@@ -1446,7 +1521,7 @@ static int drpai_regist_device(struct platform_device *pdev)
         return PTR_ERR(priv->clk_aclk);
     }
 
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     /* Get reset controller info */
     priv->rstc = devm_reset_control_get(&pdev->dev, NULL);
@@ -1729,9 +1804,16 @@ static ssize_t drpai_write_dynamic_param(struct file *filp, uint8_t *pvirt)
                 if((0 == is_raddr) || (0 == is_waddr) || ((NULL != paddr) && ('\0' == *paddr)))
                 {
                     pbuf = get_param_attr(pbuf, DRP_PARAM_ATTR_OFFSET, &param_offset, NULL);
-                    if(NULL != pbuf)
+                    /* edge fork: the sum used to be truncated to the 32-bit list
+                     * offset, so a large OFFSET_ADD wrapped past the
+                     * (offset + 4) <= size check below. Skip entries that do
+                     * not fit, as that check already does for smaller ones. */
+                    if((NULL != pbuf) &&
+                       (offset_add   <= drpai_rw_status->drpai_data_dynamic.size) &&
+                       (param_offset <= drpai_rw_status->drpai_data_dynamic.size) &&
+                       (((uint64_t)offset_add + param_offset + sizeof(uint32_t)) <= drpai_rw_status->drpai_data_dynamic.size))
                     {
-                        DRPAI_DEBUG_PRINT("offset_add = %d, param_name = %s, param_offset = %d\n", offset_add, param_name, param_offset);
+                        DRPAI_DEBUG_PRINT("offset_add = %lu, param_name = %s, param_offset = %lu\n", offset_add, param_name, param_offset);
                         list_cur = param_info_list_push(&list_top, list_cur, offset_add + param_offset);
                         if(NULL == list_cur)
                         {
@@ -1847,13 +1929,14 @@ static void param_info_list_clear(struct param_info_list* ptop)
 static long drpai_ioctl_assign(struct file *filp, unsigned int cmd, unsigned long arg)
 {
     long result = 0;
-    volatile void *p_virt_address = 0;
     struct drpai_priv *priv = drpai_priv;
     struct drpai_rw_status *drpai_rw_status = filp->private_data;
     struct drpai_rw_status *entry;
     struct list_head *listitr;
     drpai_data_t drpai_data_buf;
     uint64_t addr, size;
+    dma_addr_t dma_addr;
+    struct device *drpai_dev = &priv->pdev->dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -1941,17 +2024,15 @@ static long drpai_ioctl_assign(struct file *filp, unsigned int cmd, unsigned lon
 
     /* Data cache invalidate. DRP-AI W -> CPU R */
     addr = priv->bank | (uint64_t)drpai_data_buf.address;
-    p_virt_address = phys_to_virt(addr);
-    if (p_virt_address == 0)
+    // The cache is disabled for the initial access to read from memory.
+    dma_addr = phys_to_dma(drpai_dev, addr); 
+    if(dma_mapping_error(drpai_dev, dma_addr))
     {
         result = -EFAULT;
         goto end;
     }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-    dcache_inval_poc((unsigned long)p_virt_address, (unsigned long)p_virt_address + drpai_data_buf.size);
-#else
-    __inval_dcache_area((void *)p_virt_address, drpai_data_buf.size);
-#endif
+    dma_sync_single_for_cpu(drpai_dev, dma_addr,
+                            drpai_data_buf.size, DMA_FROM_DEVICE);
 
     /* Initialization of read / write processing variables */
     drpai_rw_status->drpai_data  = drpai_data_buf;
@@ -2103,11 +2184,11 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
     int result = 0;
     drpai_data_t proc[DRPAI_INDEX_NUM];
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* DRP single operation */
     drpai_data_t proc_drp[DRPAI_SEQ_NUM * 2];
 /* DRP single operation */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
     volatile void *p_drp_desc = 0;
     volatile void *p_aimac_desc = 0;
     struct drpai_priv *priv = drpai_priv;
@@ -2115,6 +2196,12 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
     int i;
     struct drpai_rw_status *drpai_rw_status = filp->private_data;
     uint64_t addr, size;
+    dma_addr_t dma_addr;
+    struct device *drpai_dev = &priv->pdev->dev;
+    size_t offset = 0;
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
+    dma_addr_t drp_start_addr;
+#endif
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2145,7 +2232,7 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
     spin_unlock_irqrestore(&priv->lock, flags);
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* DRP single operation */
     if(DRPAI_EXE_AI == exe_mode)
     {
@@ -2173,6 +2260,16 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
                     goto end;
                 }
         }
+        /* edge fork: the link-descriptor patch below writes at desc + size - 13
+         * and the input-address patch writes 4 bytes at drp_param, so a zero
+         * or short size wrote just below the carveout. */
+        if ((DRP_DESC_ENTRY_SIZE > proc[DRPAI_INDEX_DRP_DESC].size) ||
+            (DRP_DESC_ENTRY_SIZE > proc[DRPAI_INDEX_AIMAC_DESC].size) ||
+            (sizeof(uint32_t) > proc[DRPAI_INDEX_DRP_PARAM].size))
+        {
+            result = -EINVAL;
+            goto end;
+        }
 
         /* Check if input is in linux memory region */
         if(0 == atomic_read(&drpai_rw_status->inout_flag))
@@ -2180,6 +2277,11 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
             DRPAI_DEBUG_PRINT("Use arg variable\n");
             addr = priv->bank | (uint64_t)proc[DRPAI_INDEX_INPUT].address;
             size = (uint64_t)proc[DRPAI_INDEX_INPUT].size;
+            if (!drpai_input_area_valid(addr, size))
+            {
+                result = -EINVAL;
+                goto end;
+            }
             if(0 != drpai_flush_dcache_input_area(addr, size))
             {
                 result = -EFAULT;
@@ -2209,11 +2311,16 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
             goto end;
         }
         iowrite8(0x08, p_drp_desc + proc[DRPAI_INDEX_DRP_DESC].size - 13);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-        dcache_clean_inval_poc((unsigned long)(p_drp_desc + proc[DRPAI_INDEX_DRP_DESC].size - 13), (unsigned long)(p_drp_desc + proc[DRPAI_INDEX_DRP_DESC].size - 13) + 1);
-#else
-        __flush_dcache_area((void *)(p_drp_desc + proc[DRPAI_INDEX_DRP_DESC].size - 13), 1);
-#endif
+
+        offset = proc[DRPAI_INDEX_DRP_DESC].size - 13;
+        dma_addr = phys_to_dma(drpai_dev, addr);
+        if(dma_mapping_error(drpai_dev, dma_addr))
+        {
+            result = -EFAULT;
+            goto end;
+        }
+        dma_sync_single_for_device(drpai_dev, dma_addr+offset,
+                        1, DMA_TO_DEVICE);
 
         /* aimac_desc.bin */
         addr = priv->bank | (uint64_t)proc[DRPAI_INDEX_AIMAC_DESC].address;
@@ -2231,11 +2338,16 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         }
         iowrite8(0x08, p_aimac_desc + proc[DRPAI_INDEX_AIMAC_DESC].size - 13);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-        dcache_clean_inval_poc((unsigned long)(p_aimac_desc + proc[DRPAI_INDEX_AIMAC_DESC].size - 13), (unsigned long)(p_aimac_desc + proc[DRPAI_INDEX_AIMAC_DESC].size - 13) + 1);
-#else
-        __flush_dcache_area((void *)(p_aimac_desc + proc[DRPAI_INDEX_AIMAC_DESC].size - 13), 1);
-#endif
+        offset = proc[DRPAI_INDEX_AIMAC_DESC].size - 13;
+        dma_addr = phys_to_dma(drpai_dev, addr);
+        if(dma_mapping_error(drpai_dev, dma_addr))
+        {
+            result = -EFAULT;
+            goto end;
+        }
+        dma_sync_single_for_device(drpai_dev, dma_addr+offset,
+                        1, DMA_TO_DEVICE);
+
 
         spin_lock_irqsave(&priv->lock, flags);
         /* Init drpai_status.err */
@@ -2251,7 +2363,7 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         (void)R_DRPAI_DRP_Start(drp_base_addr[0], 0, proc[DRPAI_INDEX_DRP_DESC].address);
         (void)R_DRPAI_AIMAC_Start(aimac_base_address[0], 0, proc[DRPAI_INDEX_AIMAC_DESC].address, &priv->lock);
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     }
     else if (DRPAI_EXE_DRP == exe_mode)
     {
@@ -2270,6 +2382,19 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         for (i = 0; i < (seq.num * 2); i++)
         {
             if (0 != (proc_drp[i].address & DRPAI_64BYTE_ALIGN))
+            {
+                result = -EINVAL;
+                goto end;
+            }
+            /* edge fork: DRPcfg (even index) and DRP param (odd index) were
+             * only alignment-checked; keep them inside the carveout like the
+             * AI-mode objects. DRPAI_DRP_NOLOAD (0) on a DRPcfg slot is the
+             * skip-load sentinel and is not an address. */
+            if ((0 == (i % 2)) && (DRPAI_DRP_NOLOAD == proc_drp[i].address))
+            {
+                continue;
+            }
+            if (!drpai_in_region(priv->bank | (uint64_t)proc_drp[i].address, (uint64_t)proc_drp[i].size))
             {
                 result = -EINVAL;
                 goto end;
@@ -2309,16 +2434,17 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
                 *(p_dmabuf_vaddr + (DRPAI_SGL_DRP_DESC_SIZE * i) + 67) = 0x08;
             }
         }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-        dcache_clean_inval_poc((unsigned long)p_dmabuf_vaddr, (unsigned long)p_dmabuf_vaddr + DRPAI_CMA_SIZE);
-#else
-        __flush_dcache_area(p_dmabuf_vaddr, DRPAI_CMA_SIZE);
-#endif
+        dma_sync_single_for_device(drpai_dev, p_dmabuf_phyaddr, DRPAI_CMA_SIZE, DMA_TO_DEVICE);
 
         /* DRPcfg load skip */
+        /* edge fork: offset a local copy. Adding to p_dmabuf_phyaddr itself
+         * moved the descriptor base on every NOLOAD start, so the link
+         * pointers drifted out of the buffer and dma_free_coherent() was
+         * later handed the wrong address. */
+        drp_start_addr = p_dmabuf_phyaddr;
         if (DRPAI_DRP_NOLOAD == proc_drp[0].address)
         {
-            p_dmabuf_phyaddr = p_dmabuf_phyaddr + DRPAI_DESC_CMD_SIZE;
+            drp_start_addr = drp_start_addr + DRPAI_DESC_CMD_SIZE;
         }
 
         spin_lock_irqsave(&priv->lock, flags);
@@ -2331,15 +2457,15 @@ static long drpai_ioctl_start(struct file *filp, unsigned int cmd, unsigned long
         DRPAI_DEBUG_PRINT("status2:   %d\n", priv->drpai_status.status);
 
         /* Kick */
-        (void)R_DRPAI_DRP_Start(drp_base_addr[0], 0, p_dmabuf_phyaddr);
-        (void)R_DRPAI_AIMAC_Start(aimac_base_address[0], 0, p_dmabuf_phyaddr + (DRPAI_SGL_DRP_DESC_SIZE * DRPAI_SEQ_NUM), &priv->lock);
+        (void)R_DRPAI_DRP_Start(drp_base_addr[0], 0, drp_start_addr);
+        (void)R_DRPAI_AIMAC_Start(aimac_base_address[0], 0, drp_start_addr + (DRPAI_SGL_DRP_DESC_SIZE * DRPAI_SEQ_NUM), &priv->lock);
     }
     else
     {
         // do nothing
     }
 /* DRP single operation */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     DRPAI_DEBUG_WAIT();
     goto end;
@@ -2362,20 +2488,20 @@ static long drpai_ioctl_reset(struct file *filp, unsigned int cmd, unsigned long
 #endif
     unsigned long flags;
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     void (*finish_callback)(int);
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     DRPAI_DEBUG_PRINT("start.\n");
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     /* ISP */
     spin_lock_irqsave(&priv->lock, flags);
     finish_callback = drpai_priv->isp_finish_loc;
     spin_unlock_irqrestore(&priv->lock, flags);
     /* ISP */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
     {
@@ -2404,7 +2530,7 @@ static long drpai_ioctl_reset(struct file *filp, unsigned int cmd, unsigned long
     spin_unlock_irqrestore(&priv->lock, flags);
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     /* ISP */
     /* For reset ISP call back*/    
     if(NULL != finish_callback)
@@ -2417,7 +2543,7 @@ static long drpai_ioctl_reset(struct file *filp, unsigned int cmd, unsigned long
     spin_unlock_irqrestore(&priv->lock, flags);
     /* For reset ISP call back*/
     /* ISP */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     DRPAI_DEBUG_PRINT("status2:   %d\n", priv->drpai_status.status);
     DRPAI_DEBUG_PRINT("status_rw2:%d\n", drpai_rw_status->rw_status);
@@ -2693,10 +2819,67 @@ end:
     return result;
 }
 
+/* edge fork: offset_add comes from the caller-supplied *_param_info.txt and
+ * was used unchecked, so PREPOST_CROP / PREPOST_INADDR could write anywhere in
+ * the linear map. Require offset_add + field + width to stay inside the
+ * parameter object (offset_add <= obj_size keeps the sum from overflowing). */
+static bool drpai_param_in_obj(unsigned long offset_add, uint32_t field, uint32_t width, uint32_t obj_size)
+{
+    return (offset_add <= obj_size) &&
+           (((uint64_t)offset_add + field + width) <= obj_size);
+}
+
+/* edge fork: [addr, addr + size) lies inside the drp_reserved carveout,
+ * with the same exclusive end as the existing range checks. */
+static bool drpai_in_region(uint64_t addr, uint64_t size)
+{
+    return (drpai_region_base_addr <= addr) &&
+           ((addr + size) < (drpai_region_base_addr + drpai_region_size));
+}
+
+/* edge fork: the input image is the one buffer the DRP-AI may read from
+ * outside the carveout (e.g. a camera frame in image_buf0). Require it to lie
+ * wholly inside the carveout or the DT linux-memory-region, and to be in the
+ * kernel linear map: drpai_flush_dcache_input_area() syncs it for the
+ * device, and on this non-coherent arm64 SoC that is cache maintenance on its
+ * linear-map address, which faults on a no-map region such as ramoops.
+ * This does not confine the descriptors' own DMA addresses. */
+static bool drpai_input_area_valid(uint64_t addr, uint64_t size)
+{
+    unsigned long pfn;
+
+    /* the unfixed driver accepted a zero size; check the first byte then */
+    if (0 == size)
+    {
+        size = 1;
+    }
+    if ((addr + size) < addr)
+    {
+        return false;
+    }
+    if (!drpai_in_region(addr, size) &&
+        !((drpai_linux_mem_start <= addr) &&
+          ((addr + size) <= (drpai_linux_mem_start + drpai_linux_mem_size))))
+    {
+        return false;
+    }
+    for (pfn = PFN_DOWN(addr); pfn <= PFN_DOWN(addr + size - 1); pfn++)
+    {
+        if (!pfn_is_map_memory(pfn))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value)
 {
     int8_t result = 0;
+    dma_addr_t dma_addr;
     volatile void *virt_addr = 0;
+    struct drpai_priv *priv = drpai_priv;
+    struct device *drpai_dev = &priv->pdev->dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2707,12 +2890,14 @@ static int8_t drp_param_change16(uint64_t base, uint64_t offset, uint16_t value)
         goto end;
     }
     iowrite16(value, (void *)virt_addr);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-    dcache_clean_inval_poc((unsigned long)virt_addr, (unsigned long)virt_addr + sizeof(value));
-#else
-    __flush_dcache_area((void *)virt_addr, sizeof(value));
-#endif
+    dma_addr = phys_to_dma(drpai_dev, base + offset);
+    if(dma_mapping_error(drpai_dev, dma_addr))
+    {
+        result = -EFAULT;
+        goto end;
+    }
+    dma_sync_single_for_device(drpai_dev, dma_addr,
+                                sizeof(value), DMA_TO_DEVICE);
 
 end:
     DRPAI_DEBUG_PRINT("end.\n");
@@ -2722,7 +2907,10 @@ end:
 static int8_t drp_param_change32(uint64_t base, uint64_t offset, uint32_t value)
 {
     int8_t result = 0;
+    dma_addr_t dma_addr;
     volatile void *virt_addr = 0;
+    struct drpai_priv *priv = drpai_priv;
+    struct device *drpai_dev = &priv->pdev->dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2733,11 +2921,14 @@ static int8_t drp_param_change32(uint64_t base, uint64_t offset, uint32_t value)
         goto end;
     }
     iowrite32(value, (void *)virt_addr);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-    dcache_clean_inval_poc((unsigned long)virt_addr, (unsigned long)virt_addr + sizeof(value));
-#else
-    __flush_dcache_area((void *)virt_addr, sizeof(value));
-#endif
+    dma_addr = phys_to_dma(drpai_dev, base + offset);
+    if(dma_mapping_error(drpai_dev, dma_addr))
+    {
+        result = -EFAULT;
+        goto end;
+    }
+    dma_sync_single_for_device(drpai_dev, dma_addr,
+                                sizeof(value), DMA_TO_DEVICE);
 end:
     DRPAI_DEBUG_PRINT("end.\n");
 
@@ -2748,7 +2939,9 @@ static int8_t drpai_flush_dcache_input_area(uint64_t addr, uint64_t size)
     int8_t result = 0;
     uint64_t flush_addr, flush_size;
     uint64_t input_saddr, input_eaddr, linux_mem_saddr, linux_mem_eaddr;
-    volatile void *p_input = 0;
+    dma_addr_t dma_flush_addr;
+    struct drpai_priv *priv = drpai_priv;
+    struct device *drpai_dev = &priv->pdev->dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2781,22 +2974,18 @@ static int8_t drpai_flush_dcache_input_area(uint64_t addr, uint64_t size)
         flush_addr = 0;
         flush_size = 0;
     }
-    DRPAI_DEBUG_PRINT("flush_addr = 0x%016llX, flush_size = 0x%08X\n", flush_addr, flush_size);
+    DRPAI_DEBUG_PRINT( "flush_addr = 0x%016llX, flush_size = 0x%016llX\n", (unsigned long long)flush_addr, (unsigned long long)flush_size);
     if (0 != flush_size)
     {
         /* Input data area cache flush */
-        p_input = phys_to_virt(flush_addr);
-        if (0 == p_input)
+        dma_flush_addr = phys_to_dma(drpai_dev, flush_addr);
+        if(dma_mapping_error(drpai_dev, dma_flush_addr))
         {
-            result = -1;
+            result = -EFAULT;
             goto end;
         }
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-        dcache_clean_inval_poc((unsigned long)p_input, (unsigned long)p_input + flush_size);
-#else
-        __flush_dcache_area((void *)p_input, flush_size);
-#endif
+        dma_sync_single_for_device(drpai_dev, dma_flush_addr,
+                                    flush_size, DMA_TO_DEVICE);
     }
 end:
     DRPAI_DEBUG_PRINT("end.\n");
@@ -2819,6 +3008,7 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
     unsigned long offset_add1;
     int mode = 0;
     uint64_t addr;
+    int is_sema_locked = DRPAI_SEMA_STATUS_UNLOCKED;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -2837,6 +3027,7 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
         result = -ERESTART;
         goto end;
     }
+    is_sema_locked = DRPAI_SEMA_STATUS_LOCKED;
     DRPAI_DEBUG_PRINT("status_rw1:%d\n", drpai_rw_status->rw_status);
 
     /* Check NULL */
@@ -2937,7 +3128,19 @@ static long drpai_ioctl_prepost_crop(struct file *filp, unsigned int cmd, unsign
         buf = NULL;
     }
 
-    DRPAI_DEBUG_PRINT("offset_add0=%d, offset_add1=%d\n", offset_add0, offset_add1);
+    DRPAI_DEBUG_PRINT("offset_add0 = %lu, offset_add1 = %lu\n", offset_add0, offset_add1);
+
+    /* Every field written below must lie inside drp_param.bin */
+    if (!drpai_param_in_obj(offset_add0, DRP_PARAM_IMG_OWIDTH,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_IMG_OHEIGHT,  sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_CROP_POS_X,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add0, DRP_PARAM_CROP_POS_Y,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add1, DRP_PARAM_IMG_IWIDTH,   sizeof(uint16_t), crop_param_buf.obj.size) ||
+        !drpai_param_in_obj(offset_add1, DRP_PARAM_IMG_IHEIGHT,  sizeof(uint16_t), crop_param_buf.obj.size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
 
     /* Change parameters of drp_param.bin to value specified by user app. */
     addr = priv->bank | (uint64_t)crop_param_buf.obj.address;
@@ -2980,7 +3183,9 @@ end:
     {
         vfree(buf);
     }
-    if((-EBUSY != result) || (-ERESTART != result))
+    /* edge fork: the old (-EBUSY != r) || (-ERESTART != r) test was always
+     * true, so rw_sem was released even on the paths that never took it. */
+    if(DRPAI_SEMA_STATUS_LOCKED == is_sema_locked)
     {
         up(&rw_sem);
     }
@@ -3002,6 +3207,7 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
     unsigned long flags;
     unsigned long offset_add;
     uint64_t addr, size;
+    int is_sema_locked = DRPAI_SEMA_STATUS_UNLOCKED;
 
     DRPAI_DEBUG_PRINT("start.\n");
 
@@ -3020,6 +3226,7 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
         result = -ERESTART;
         goto end;
     }
+    is_sema_locked = DRPAI_SEMA_STATUS_LOCKED;
     DRPAI_DEBUG_PRINT("status_rw1:%d\n", drpai_rw_status->rw_status);
 
     /* Check NULL */
@@ -3041,6 +3248,9 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
         result = -EFAULT;
         goto end;
     }
+    /* edge fork: name is passed to strstr() below; terminate it so an
+     * unterminated name cannot read past the struct */
+    inout_param_buf.name[DRPAI_MAX_NODE_NAME - 1] = '\0';
     /* Check if there is in drpai dedicated area */
     if((drpai_rw_status->assign_param.obj.address != inout_param_buf.obj.address) ||
        (drpai_rw_status->assign_param.obj.size != inout_param_buf.obj.size))
@@ -3107,11 +3317,23 @@ static long drpai_ioctl_prepost_inaddr(struct file *filp, unsigned int cmd, unsi
         buf = NULL;
     }
 
-    DRPAI_DEBUG_PRINT("offset_add=%d\n", offset_add);
+    DRPAI_DEBUG_PRINT("offset_add = %lu\n", offset_add);
+
+    /* The raddr field written below must lie inside drp_param.bin */
+    if (!drpai_param_in_obj(offset_add, DRP_PARAM_raddr, sizeof(uint32_t), inout_param_buf.obj.size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
 
     /* Check if input is in linux memory region */
     addr = priv->bank | (uint64_t)inout_param_buf.data.address;
     size = (uint64_t)inout_param_buf.data.size;
+    if (!drpai_input_area_valid(addr, size))
+    {
+        result = -EINVAL;
+        goto end;
+    }
     if(0 != drpai_flush_dcache_input_area(addr, size))
     {
         result = -EFAULT;
@@ -3134,7 +3356,9 @@ end:
     {
         vfree(buf);
     }
-    if((-EBUSY != result) || (-ERESTART != result))
+    /* edge fork: the old (-EBUSY != r) || (-ERESTART != r) test was always
+     * true, so rw_sem was released even on the paths that never took it. */
+    if(DRPAI_SEMA_STATUS_LOCKED == is_sema_locked)
     {
         up(&rw_sem);
     }
@@ -3145,15 +3369,28 @@ end:
 }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned long arg)
 {
     long result = 0;
     struct drpai_priv *priv = drpai_priv;
     unsigned long flags;
+    drpai_seq_t seq_buf;
+    uint32_t mode;
 
     DRPAI_DEBUG_PRINT(" start.\n");
     DRPAI_DEBUG_PRINT(" status1:%d\n", priv->drpai_status.status);
+
+    /* edge fork: copy into a local and validate it before committing, and
+     * serialise with START through priv->sem. The old code copied straight
+     * into the global seq, so a rejected num stayed in place for the next
+     * START to index proc_drp[] and the descriptor buffer with, and num == 0
+     * was accepted. */
+    if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT)))
+    {
+        result = -ETIMEDOUT;
+        goto end;
+    }
 
     /* Check the internal state of DRP-AI */
     spin_lock_irqsave(&priv->lock, flags);
@@ -3166,26 +3403,26 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
     spin_unlock_irqrestore(&priv->lock, flags);
 
     /* Copy arguments from user space to kernel space */
-    if (copy_from_user(&seq, (void __user *)arg, sizeof(drpai_seq_t)))
+    if (copy_from_user(&seq_buf, (void __user *)arg, sizeof(drpai_seq_t)))
     {
         result = -EFAULT;
         goto end;
     }
 
     /* Check Argument DRP Simgle */
-    if (DRPAI_SEQ_NUM < seq.num)
+    if ((0 == seq_buf.num) || (DRPAI_SEQ_NUM < seq_buf.num))
     {
         result = -EINVAL;
         goto end;
     }
 
-    if (DRPAI_EXE_DRP == seq.order[0])
+    if (DRPAI_EXE_DRP == seq_buf.order[0])
     {
-        exe_mode = DRPAI_EXE_DRP;
+        mode = DRPAI_EXE_DRP;
     }
-    else if (DRPAI_EXE_AI == seq.order[0])
+    else if (DRPAI_EXE_AI == seq_buf.order[0])
     {
-        exe_mode = DRPAI_EXE_AI;
+        mode = DRPAI_EXE_AI;
     }
     else
     {
@@ -3193,16 +3430,26 @@ static long drpai_ioctl_set_seq(struct file *filp, unsigned int cmd, unsigned lo
         goto end;
     }
 
+    /* the DRP normal-interrupt handler reads both under priv->lock */
+    spin_lock_irqsave(&priv->lock, flags);
+    seq      = seq_buf;
+    exe_mode = mode;
+    spin_unlock_irqrestore(&priv->lock, flags);
+
     DRPAI_DEBUG_PRINT(" DRP exe mode:%d\n", exe_mode);
 
     DRPAI_DEBUG_PRINT(" status2:%d\n", priv->drpai_status.status);
 end:
+    if(-ETIMEDOUT != result)
+    {
+        up(&priv->sem);
+    }
     DRPAI_DEBUG_PRINT(" end.\n");
 
     return result;
 }
 /* DRP single operation */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 static long drpai_ioctl_get_drpai_area(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -3244,14 +3491,14 @@ static int drpai_drp_cpg_init(void)
     DRPAI_DEBUG_PRINT("start.\n");
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     /* Access clock interface */
     clk_prepare_enable(priv->clk_int);
     clk_prepare_enable(priv->clk_aclk_drp);
     clk_prepare_enable(priv->clk_mclk);
     clk_prepare_enable(priv->clk_dclkin);
     clk_prepare_enable(priv->clk_aclk);
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     r_data = reset_control_status(priv->rstc);
     DRPAI_DEBUG_PRINT("CPG reset_control_status before %d \n", r_data);
@@ -3342,22 +3589,22 @@ static int drpai_open_process(void)
     }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     if(R_DRPAI_SUCCESS != drpai_drp_config_init())
     {
         ret = -ENOMEM;
         goto end;
     }
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     /* INIT -> IDLE */
     spin_lock_irqsave(&priv->lock, flags);
     priv->drpai_status.status = DRPAI_STATUS_IDLE;
     priv->bank = bank;
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     exe_mode = DRPAI_EXE_AI;
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
     spin_unlock_irqrestore(&priv->lock, flags);
 
     ret = R_DRPAI_SUCCESS;
@@ -3382,7 +3629,7 @@ static int drpai_close_process(void)
     }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
     //CPG clock disable
     DRPAI_DEBUG_PRINT("CPG clock disable\n");
     clk_disable_unprepare(priv->clk_int);
@@ -3392,7 +3639,7 @@ static int drpai_close_process(void)
     clk_disable_unprepare(priv->clk_aclk);  
 
     drpai_drp_config_uninit();
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
     /* IDLE -> INIT */
     /* RUN  -> INIT */
@@ -3409,7 +3656,7 @@ end:
 }
 
 /* V2L conditional compilation */
-#ifdef CONFIG_ARCH_R9A07G054
+#ifdef DRPAI_CONFIG_ARCH_RZV2L
 /* ISP */
 static int drpai_drp_config_init(void)
 {
@@ -3428,7 +3675,9 @@ static int drpai_drp_config_init(void)
         result = -1;
         goto end;
     }
-    DRPAI_DEBUG_PRINT("dmabuf:0x%08X, dmaphys:0x%08X\n", p_dmabuf_vaddr, p_dmabuf_phyaddr);
+    p_dmabuf_alloc_vaddr = p_dmabuf_vaddr;
+    p_dmabuf_alloc_phyaddr = p_dmabuf_phyaddr;
+    DRPAI_DEBUG_PRINT("dmabuf:%px, dmaphys:%pad\n", p_dmabuf_vaddr, &p_dmabuf_phyaddr);
 
     /* 64bytes alignment adjustment */
     if (0 != (p_dmabuf_phyaddr & DRPAI_64BYTE_ALIGN))
@@ -3444,11 +3693,7 @@ static int drpai_drp_config_init(void)
         memcpy(p_dmabuf_vaddr + (DRPAI_SGL_DRP_DESC_SIZE * i), &drp_single_desc_bin[0], sizeof(drp_single_desc_bin));
     }
 /* DRP single operation */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-    dcache_clean_inval_poc((unsigned long)p_dmabuf_vaddr, (unsigned long)p_dmabuf_vaddr + DRPAI_CMA_SIZE);
-#else
-    __flush_dcache_area(p_dmabuf_vaddr, DRPAI_CMA_SIZE);
-#endif
+    dma_sync_single_for_device(dev, p_dmabuf_phyaddr, DRPAI_CMA_SIZE, DMA_TO_DEVICE);
 
     result = R_DRPAI_SUCCESS;
 
@@ -3466,7 +3711,7 @@ static void drpai_drp_config_uninit(void)
 
     DRPAI_DEBUG_PRINT("start.\n");
 
-    dma_free_coherent(dev, DRPAI_CMA_SIZE, p_dmabuf_vaddr, p_dmabuf_phyaddr);
+    dma_free_coherent(dev, DRPAI_CMA_SIZE, p_dmabuf_alloc_vaddr, p_dmabuf_alloc_phyaddr);
     DRPAI_DEBUG_PRINT("end.\n");
 }
 
@@ -3476,6 +3721,12 @@ int drpai_open_k(void)
     struct drpai_priv *priv = drpai_priv;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
@@ -3520,6 +3771,12 @@ int drpai_close_k(void)
     unsigned long flags;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
@@ -3574,8 +3831,16 @@ int drpai_start_k(drpai_data_t *arg, void (*isp_finish)(int result))
     drpai_data_t *proc_k;
     unsigned long flags;
     int i;
+    struct device *drpai_dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
+    drpai_dev = &priv->pdev->dev;
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
     {
@@ -3677,11 +3942,7 @@ int drpai_start_k(drpai_data_t *arg, void (*isp_finish)(int result))
         DRPAI_DEBUG_PRINT("parm_address:0x%08X, parm_size:0x%08X\n", proc_k[i * 2 + 1].address, proc_k[i * 2 + 1].size);
 
     }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,1)
-    dcache_clean_inval_poc((unsigned long)p_dmabuf_vaddr, (unsigned long)p_dmabuf_vaddr + DRPAI_CMA_SIZE);
-#else
-    __flush_dcache_area(p_dmabuf_vaddr, DRPAI_CMA_SIZE);
-#endif
+    dma_sync_single_for_device(drpai_dev, p_dmabuf_phyaddr, DRPAI_CMA_SIZE, DMA_TO_DEVICE);
 
     spin_lock_irqsave(&priv->lock, flags);
     /* Init drpai_status.err */
@@ -3714,18 +3975,18 @@ EXPORT_SYMBOL(drpai_open_k);
 EXPORT_SYMBOL(drpai_close_k);
 EXPORT_SYMBOL(drpai_start_k);
 /* ISP */
-#endif /* CONFIG_ARCH_R9A07G054 */
+#endif /* DRPAI_CONFIG_ARCH_RZV2L */
 
 module_platform_driver(drpai_platform_driver);
 MODULE_DEVICE_TABLE(of, drpai_match);
 
-#if defined(CONFIG_ARCH_R9A09G011) 
+#if defined(DRPAI_CONFIG_ARCH_RZV2M) 
 /* V2M conditional compilation */
 MODULE_DESCRIPTION("RZ/V2M DRPAI driver");
-#elif defined(CONFIG_ARCH_R9A09G055)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2MA)
 /* V2MA conditional compilation */
 MODULE_DESCRIPTION("RZ/V2MA DRPAI driver");
-#elif defined(CONFIG_ARCH_R9A07G054)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2L)
 /* V2L conditional compilation */
 MODULE_DESCRIPTION("RZ/V2L DRPAI driver");
 #endif

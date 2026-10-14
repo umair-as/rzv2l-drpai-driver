@@ -27,10 +27,10 @@
 #include "drpai-core.h"
 #include "drpai-reg.h"
 
-#if defined(CONFIG_ARCH_R9A09G011) || defined(CONFIG_ARCH_R9A09G055)
+#if defined(DRPAI_CONFIG_ARCH_RZV2M) || defined(DRPAI_CONFIG_ARCH_RZV2MA)
 /* V2M(A) conditional compilation */
 #define SET_STPC_CLKGEN_DIV                 (0x00030001)
-#elif defined(CONFIG_ARCH_R9A07G054)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2L)
 /* V2L conditional compilation */
 #define SET_STPC_CLKGEN_DIV                 (0x00020001)
 #endif 
@@ -1462,13 +1462,13 @@ static int32_t drp_cpg_reset(struct reset_control *rst_ctrl)
     return ret;
 }
 
-#if defined(CONFIG_ARCH_R9A09G011) 
+#if defined(DRPAI_CONFIG_ARCH_RZV2M) 
 /* V2M conditional compilation */
 MODULE_DESCRIPTION("RZ/V2M DRPAI driver");
-#elif defined(CONFIG_ARCH_R9A09G055)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2MA)
 /* V2MA conditional compilation */
 MODULE_DESCRIPTION("RZ/V2MA DRPAI driver");
-#elif defined(CONFIG_ARCH_R9A07G054)
+#elif defined(DRPAI_CONFIG_ARCH_RZV2L)
 /* V2L conditional compilation */
 MODULE_DESCRIPTION("RZ/V2L DRPAI driver");
 #endif

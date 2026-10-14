@@ -14,5 +14,8 @@
 # precedence for everything else, so only drpai.h falls through to here).
 
 obj-m += drpai.o
-drpai-objs := drpai-core.o drpai-if.o
+drpai-y := drpai-core.o drpai-if.o
 ccflags-y += -I$(src)/include
+# v2.30 selects the RZ/V2L code paths with this define (Renesas's module
+# Makefile sets it) instead of the kernel's CONFIG_ARCH_R9A07G054.
+ccflags-y += -DDRPAI_CONFIG_ARCH_RZV2L
