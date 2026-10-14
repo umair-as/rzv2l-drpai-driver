@@ -2773,7 +2773,12 @@ static bool drpai_input_area_valid(uint64_t addr, uint64_t size)
 {
     unsigned long pfn;
 
-    if ((0 == size) || ((addr + size) < addr))
+    /* the unfixed driver accepted a zero size; check the first byte then */
+    if (0 == size)
+    {
+        size = 1;
+    }
+    if ((addr + size) < addr)
     {
         return false;
     }
