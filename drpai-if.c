@@ -358,10 +358,24 @@ static struct platform_driver drpai_platform_driver =
 
 static int drpai_probe(struct platform_device *pdev)
 {
+    int ret;
+
     DRPAI_DEBUG_PRINT("start.\n");
 
-    drpai_regist_driver();
-    drpai_regist_device(pdev);
+    /* edge fork: both return values were ignored and probe always returned
+     * 0, and /dev/drpai0 was created before the device state existed. Set up
+     * the device first, publish the char device last, and fail the probe
+     * (including -EPROBE_DEFER) when either step fails. */
+    ret = drpai_regist_device(pdev);
+    if (ret)
+    {
+        return ret;
+    }
+    ret = drpai_regist_driver();
+    if (ret)
+    {
+        return ret;
+    }
 
     DRPAI_DEBUG_PRINT("end.\n");
 
@@ -1218,7 +1232,7 @@ static int drpai_regist_driver(void)
     alloc_ret = alloc_chrdev_region(&dev, MINOR_BASE, MINOR_NUM, DRPAI_DRIVER_NAME);
     if (alloc_ret != 0) {
         pr_err("DRP-AI Driver: alloc_chrdev_region = %d\n", alloc_ret);
-        return -1;
+        return alloc_ret;
     }
 
     /* Save major number. */
@@ -1234,7 +1248,7 @@ static int drpai_regist_driver(void)
     if (cdev_err != 0) {
         pr_err("DRP-AI Driver: cdev_add = %d\n", cdev_err);
         unregister_chrdev_region(dev, MINOR_NUM);
-        return -1;
+        return cdev_err;
     }
 
     /* Cleate class "/sys/class/drpai/" */
@@ -1251,13 +1265,24 @@ static int drpai_regist_driver(void)
         pr_err("DRP-AI Driver: class_create = %d\n", ptr_err);
         cdev_del(&drpai_cdev);
         unregister_chrdev_region(dev, MINOR_NUM);
-        return -1;
+        return ptr_err;
     }
 
     /* Make "/sys/class/drpai/drpai*" */
     for (minor = MINOR_BASE; minor < MINOR_BASE + MINOR_NUM; minor++) {
         drpai_device_array[minor - MINOR_BASE] =
         device_create(drpai_class, NULL, MKDEV(drpai_major, minor), NULL, DRPAI_DRIVER_NAME "%d", minor);
+        if (IS_ERR(drpai_device_array[minor - MINOR_BASE])) {
+            ptr_err = PTR_ERR(drpai_device_array[minor - MINOR_BASE]);
+            pr_err("DRP-AI Driver: device_create = %d\n", ptr_err);
+            while (--minor >= (int)MINOR_BASE) {
+                device_destroy(drpai_class, MKDEV(drpai_major, minor));
+            }
+            class_destroy(drpai_class);
+            cdev_del(&drpai_cdev);
+            unregister_chrdev_region(dev, MINOR_NUM);
+            return ptr_err;
+        }
     }
 
     DRPAI_DEBUG_PRINT("end.\n");
@@ -1335,6 +1360,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Convert register region to a struct resource */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No memory address assigned to the region\n");
         return -ENOMEM;
@@ -1351,6 +1377,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Convert memory region to a struct resource */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No memory address assigned to the region\n");
         return -ENOMEM;
@@ -1368,6 +1395,7 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* read linux start address and size */
     ret = of_address_to_resource(np, 0, &reserved_res);
+    of_node_put(np);
     if (ret) {
         dev_err(&pdev->dev, "No address assigned to the linux-memory-region\n");
         return -ENOMEM;
@@ -1408,18 +1436,27 @@ static int drpai_regist_device(struct platform_device *pdev)
 
     /* Registering an interrupt handler */
     irq = platform_get_irq(pdev, 1);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_drp_errint, 0, "drpa errint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
         return ret;
     }
     irq = platform_get_irq(pdev, 2);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_mac_nmlint, 0, "drpa mac_nmlint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
         return ret;
     }
     irq = platform_get_irq(pdev, 3);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_mac_errint, 0, "drpa mac_errint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
@@ -1430,6 +1467,9 @@ static int drpai_regist_device(struct platform_device *pdev)
 #ifdef DRPAI_CONFIG_ARCH_RZV2L
 
     irq = platform_get_irq(pdev, 0);
+    if (irq < 0) {
+        return irq;
+    }
     ret = devm_request_irq(&pdev->dev, irq, irq_drp_nmlint, 0, "drpa nmlint", priv);
     if (ret) {
         dev_err(&pdev->dev, "Failed to claim IRQ!\n");
