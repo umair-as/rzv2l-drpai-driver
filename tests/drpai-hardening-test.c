@@ -108,17 +108,17 @@ static int load_param_info(int fd, const char *text)
     return write(fd, text, p.info_size) == (ssize_t)p.info_size ? 0 : -errno;
 }
 
-/* S16: unknown command must be -ENOTTY, not -EFAULT. */
+/* Unknown command must be -ENOTTY, not -EFAULT. */
 static void t_unknown_ioctl(void)
 {
     int fd = dev_open();
     int r = xioctl(fd, _IO(DRPAI_IO_TYPE, 0x7f), NULL);
 
-    report("S16 unknown ioctl -> ENOTTY", r == -ENOTTY, strerror(-r));
+    report("unknown ioctl -> ENOTTY", r == -ENOTTY, strerror(-r));
     close(fd);
 }
 
-/* S1: PREPOST_CROP with OFFSET_ADD past obj.size (but still inside the
+/* PREPOST_CROP with OFFSET_ADD past obj.size (but still inside the
  * carveout, so the unfixed driver's stray write stays in scratch space). */
 static void t_crop_offset(void)
 {
@@ -131,13 +131,13 @@ static void t_crop_offset(void)
     r = load_param_info(fd, "OFFSET_ADD:4096,drp_lib:crop,\nOFFSET_ADD:4096,x,\n");
     if (!r)
         r = xioctl(fd, DRPAI_PREPOST_CROP, &c);
-    report("S1 PREPOST_CROP offset past obj -> EINVAL", r == -EINVAL, strerror(-r));
+    report("PREPOST_CROP offset past obj -> EINVAL", r == -EINVAL, strerror(-r));
     close(fd);
     carveout_read(scratch(0), after, sizeof(after));
-    report("S1 PREPOST_CROP obj left untouched", !memcmp(before, after, sizeof(after)), NULL);
+    report("PREPOST_CROP obj left untouched", !memcmp(before, after, sizeof(after)), NULL);
 }
 
-/* S1: PREPOST_INADDR with OFFSET_ADD past obj.size. */
+/* PREPOST_INADDR with OFFSET_ADD past obj.size. */
 static void t_inaddr_offset(void)
 {
     drpai_inout_t io;
@@ -152,11 +152,11 @@ static void t_inaddr_offset(void)
     r = load_param_info(fd, "x,prop:input,in0,OFFSET_ADD:4096,\n");
     if (!r)
         r = xioctl(fd, DRPAI_PREPOST_INADDR, &io);
-    report("S1 PREPOST_INADDR offset past obj -> EINVAL", r == -EINVAL, strerror(-r));
+    report("PREPOST_INADDR offset past obj -> EINVAL", r == -EINVAL, strerror(-r));
     close(fd);
 }
 
-/* S16: name without a NUL terminator must not be read past the struct. */
+/* A name without a NUL terminator must not be read past the struct. */
 static void t_inaddr_name_unterminated(void)
 {
     drpai_inout_t io;
@@ -171,11 +171,11 @@ static void t_inaddr_name_unterminated(void)
     if (!r)
         r = xioctl(fd, DRPAI_PREPOST_INADDR, &io);
     /* no matching line: the search ends with -EFAULT, without an oops */
-    report("S16 PREPOST_INADDR unterminated name", r == -EFAULT, strerror(-r));
+    report("PREPOST_INADDR unterminated name", r == -EFAULT, strerror(-r));
     close(fd);
 }
 
-/* S6: SET_SEQ must reject num == 0 and num > DRPAI_SEQ_NUM. */
+/* SET_SEQ must reject num == 0 and num > DRPAI_SEQ_NUM. */
 static void t_set_seq(void)
 {
     drpai_seq_t s;
@@ -187,14 +187,14 @@ static void t_set_seq(void)
     r21 = xioctl(fd, DRPAI_SET_SEQ, &s);
     s.num = 0;
     r0 = xioctl(fd, DRPAI_SET_SEQ, &s);
-    report("S6 SET_SEQ num=21 -> EINVAL", r21 == -EINVAL, strerror(-r21));
-    report("S6 SET_SEQ num=0 -> EINVAL", r0 == -EINVAL, strerror(-r0));
+    report("SET_SEQ num=21 -> EINVAL", r21 == -EINVAL, strerror(-r21));
+    report("SET_SEQ num=0 -> EINVAL", r0 == -EINVAL, strerror(-r0));
     s.num = 1;
     xioctl(fd, DRPAI_SET_SEQ, &s);     /* leave AI mode selected */
     close(fd);
 }
 
-/* S8: param_info offset that wraps 32 bits must not rewrite anything. */
+/* A param_info offset that wraps 32 bits must not rewrite anything. */
 static void t_dynamic_param_wrap(void)
 {
     uint8_t zero[OBJ_SIZE] = { 0 }, back[OBJ_SIZE];
@@ -216,11 +216,11 @@ static void t_dynamic_param_wrap(void)
     close(fd);
     carveout_read(scratch(0), back, sizeof(back));
     memcpy(&v, back + 4, 4);
-    report("S8 wrapped param offset not rewritten", !r && v == 0,
+    report("wrapped param offset not rewritten", !r && v == 0,
            r ? strerror(-r) : (v ? "offset 4 was rewritten" : NULL));
 }
 
-/* S9: REG_DUMP read with a count that is not a multiple of 4. (A huge count
+/* REG_DUMP read with a count that is not a multiple of 4. (A huge count
  * is not tested: it would read the whole register window.) */
 static void t_reg_dump_read(void)
 {
@@ -229,13 +229,13 @@ static void t_reg_dump_read(void)
     ssize_t n;
 
     if (vendor) {
-        skip("S9 REG_DUMP read odd count");
+        skip("REG_DUMP read odd count");
         return;
     }
     fd = dev_open();
     r = xioctl(fd, DRPAI_REG_DUMP, NULL);
     n = r ? -1 : read(fd, buf, 6);
-    report("S9 REG_DUMP read(6) returns 4", n == 4, NULL);
+    report("REG_DUMP read(6) returns 4", n == 4, NULL);
     close(fd);
     /* the semaphore must be free again: a fresh GET_STATUS must not time out */
     fd = dev_open();
@@ -243,7 +243,7 @@ static void t_reg_dump_read(void)
         drpai_status_t st;
         r = xioctl(fd, DRPAI_GET_STATUS, &st);
     }
-    report("S9 priv->sem released after read", r != -ETIMEDOUT, strerror(-r));
+    report("priv->sem released after read", r != -ETIMEDOUT, strerror(-r));
     close(fd);
 }
 
@@ -258,47 +258,47 @@ static void valid_proc(drpai_data_t proc[DRPAI_INDEX_NUM])
     }
 }
 
-/* S13: zero-size descriptor must be rejected before any write. */
+/* A zero-size descriptor must be rejected before any write. */
 static void t_start_zero_desc(void)
 {
     drpai_data_t proc[DRPAI_INDEX_NUM];
     int fd, r;
 
     if (vendor) {
-        skip("S13 START with zero-size DRP desc");
+        skip("START with zero-size DRP desc");
         return;
     }
     fd = dev_open();
     valid_proc(proc);
     proc[DRPAI_INDEX_DRP_DESC].size = 0;
     r = xioctl(fd, DRPAI_START, proc);
-    report("S13 START zero-size DRP desc -> EINVAL", r == -EINVAL, strerror(-r));
+    report("START zero-size DRP desc -> EINVAL", r == -EINVAL, strerror(-r));
     valid_proc(proc);
     proc[DRPAI_INDEX_AIMAC_DESC].size = 0;
     r = xioctl(fd, DRPAI_START, proc);
-    report("S13 START zero-size AIMAC desc -> EINVAL", r == -EINVAL, strerror(-r));
+    report("START zero-size AIMAC desc -> EINVAL", r == -EINVAL, strerror(-r));
     close(fd);
 }
 
-/* S2: AI-mode INPUT outside the carveout and outside Linux RAM. */
+/* AI-mode INPUT outside the carveout and outside Linux RAM. */
 static void t_start_bad_input(void)
 {
     drpai_data_t proc[DRPAI_INDEX_NUM];
     int fd, r;
 
     if (vendor) {
-        skip("S2 START with INPUT outside RAM");
+        skip("START with INPUT outside RAM");
         return;
     }
     fd = dev_open();
     valid_proc(proc);
     proc[DRPAI_INDEX_INPUT].address = 0x10000000;  /* below DRAM: MMIO space */
     r = xioctl(fd, DRPAI_START, proc);
-    report("S2 START INPUT outside RAM -> EINVAL", r == -EINVAL, strerror(-r));
+    report("START INPUT outside RAM -> EINVAL", r == -EINVAL, strerror(-r));
     close(fd);
 }
 
-/* S2: DRP-mode cfg/param outside the carveout. */
+/* DRP-mode cfg/param outside the carveout. */
 static void t_start_drp_bad_addr(void)
 {
     drpai_data_t proc_drp[DRPAI_SEQ_NUM * 2];
@@ -306,7 +306,7 @@ static void t_start_drp_bad_addr(void)
     int fd, r, i;
 
     if (vendor) {
-        skip("S2 DRP-mode START outside carveout");
+        skip("DRP-mode START outside carveout");
         return;
     }
     fd = dev_open();
@@ -321,13 +321,13 @@ static void t_start_drp_bad_addr(void)
     proc_drp[1].address = 0x10000000;               /* param outside */
     if (!r)
         r = xioctl(fd, DRPAI_START, proc_drp);
-    report("S2 DRP-mode START param outside -> EINVAL", r == -EINVAL, strerror(-r));
+    report("DRP-mode START param outside -> EINVAL", r == -EINVAL, strerror(-r));
     s.order[0] = DRPAI_EXE_AI;
     xioctl(fd, DRPAI_SET_SEQ, &s);
     close(fd);
 }
 
-/* S10 smoke: poll on an idle device returns without blocking. */
+/* Smoke test: poll on an idle device returns without blocking. */
 static void t_poll(void)
 {
     struct pollfd p;
@@ -336,7 +336,7 @@ static void t_poll(void)
     p.fd = fd;
     p.events = POLLIN;
     r = poll(&p, 1, 0);
-    report("S10 poll on idle device", r >= 0, NULL);
+    report("poll on idle device", r >= 0, NULL);
     close(fd);
 }
 
