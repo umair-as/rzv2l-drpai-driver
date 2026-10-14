@@ -374,17 +374,23 @@ static int drpai_probe(struct platform_device *pdev)
     ret = drpai_regist_device(pdev);
     if (ret)
     {
-        return ret;
+        goto err;
     }
     ret = drpai_regist_driver();
     if (ret)
     {
-        return ret;
+        goto err;
     }
 
     DRPAI_DEBUG_PRINT("end.\n");
 
     return 0;
+err:
+    /* devm frees priv and the sentinel when probe fails; do not leave the
+     * globals pointing at them for drpai_open_k() and friends */
+    drpai_priv = NULL;
+    drpai_rw_sentinel = NULL;
+    return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
@@ -3715,6 +3721,12 @@ int drpai_open_k(void)
     struct drpai_priv *priv = drpai_priv;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
@@ -3759,6 +3771,12 @@ int drpai_close_k(void)
     unsigned long flags;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
     DRPAI_DEBUG_PRINT("status1:   %d\n", priv->drpai_status.status);
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
@@ -3813,9 +3831,16 @@ int drpai_start_k(drpai_data_t *arg, void (*isp_finish)(int result))
     drpai_data_t *proc_k;
     unsigned long flags;
     int i;
-    struct device *drpai_dev = &priv->pdev->dev;
+    struct device *drpai_dev;
 
     DRPAI_DEBUG_PRINT("start.\n");
+
+    /* edge fork: the device may not have probed (or may have failed to) */
+    if (NULL == priv)
+    {
+        return -ENODEV;
+    }
+    drpai_dev = &priv->pdev->dev;
 
     if(unlikely(down_timeout(&priv->sem, MAX_SEM_TIMEOUT))) 
     {
